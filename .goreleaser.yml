@@ -49,10 +49,10 @@ changelog:
 
 brews:
   - repository:
-      owner: mio
+      owner: Orwell-Yu
       name: homebrew-tap
     directory: Formula
-    homepage: "https://github.com/mio/korthex"
+    homepage: "https://github.com/Orwell-Yu/korthex"
     description: "AI-native Kubernetes TUI tool - speak to your cluster, see everything"
     license: "Apache-2.0"
     install: |
