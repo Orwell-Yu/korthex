@@ -1,0 +1,43 @@
+version: "2"
+
+formatters:
+  enable:
+    - goimports
+  settings:
+    goimports:
+      local-prefixes: github.com/Orwell-Yu/korthex
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - ineffassign
+    - gosec
+    - unconvert
+    - misspell
+    - bodyclose
+    - noctx
+    - exhaustive
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+      - path: mock_.*\.go
+        linters:
+          - unused
+
+linters-settings:
+  govet:
+    enable:
+      - shadow
+  exhaustive:
+    default-signifies-exhaustive: true
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 10

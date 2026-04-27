@@ -1,0 +1,41 @@
+# Korthex Default Configuration
+# Copy to ~/.config/korthex/config.yaml and customize
+
+kubernetes:
+  kubeconfig: ~/.kube/config
+  default_context: ""              # empty = use current context
+
+llm:
+  provider: openai                 # openai | anthropic | gemini
+  api_key: ""                      # prefer env var: KORTHEX_LLM_API_KEY
+  model: gpt-4o                    # provider default model
+  base_url: ""                     # optional: for proxy/gateway endpoints
+  temperature: 0.1                 # low temperature for precise command generation
+  max_tokens: 4096
+  send_logs: true                  # false = AI generates commands only, no log analysis
+
+agent:
+  max_iterations: 20               # agentic loop max iterations
+  max_history_turns: 20            # conversation context retained turns
+
+ui:
+  theme: dark                      # dark | light | dracula | nord
+  log_lines_limit: 10000           # ring buffer max log lines
+  log_page_size: 1000              # log viewer lines per page
+  default_log_since: 1h            # default time range for log queries
+
+# --- Phase 2 additions ---
+
+privacy:
+  redaction:
+    enabled: true                  # redact sensitive data before LLM calls
+    rules: []                      # custom rules: [{name, pattern, replacement}]
+    disable_builtin: []            # builtin rule names to disable (e.g., ipv4)
+
+history:
+  enabled: true                    # conversation history persistence
+  retention_days: 30               # auto-cleanup older sessions on startup
+  db_path: "~/.korthex/history.db"
+
+analysis:
+  trace_id_patterns: []            # custom trace ID patterns: [{name, pattern}]
