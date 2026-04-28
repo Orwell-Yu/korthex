@@ -26,6 +26,20 @@ func BuildSystemPrompt(ctx ClusterContext, providerName string, sendLogs bool, r
 	}
 	b.WriteString("\n")
 
+	// Cluster switching
+	b.WriteString("## Cluster Switching\n")
+	b.WriteString("You have two tools for cluster management:\n")
+	b.WriteString("1. list_kubeconfigs — lists all kubeconfig files under ~/.kube/ and their contexts. ")
+	b.WriteString("Call this FIRST when the user asks to switch clusters or asks what clusters are available.\n")
+	b.WriteString("2. switch_kubeconfig — switches to a specific context (and optionally a different kubeconfig file).\n\n")
+	b.WriteString("When the user asks to switch clusters, change context, or connect to a different environment:\n")
+	b.WriteString("- ALWAYS call list_kubeconfigs first to discover available options.\n")
+	b.WriteString("- Present the available contexts to the user and ask which one they want.\n")
+	b.WriteString("- Then call switch_kubeconfig with the chosen context.\n")
+	b.WriteString("- If the user is specific (e.g. 'switch to staging'), match the name from list_kubeconfigs results and switch directly.\n")
+	b.WriteString("- If a resource lookup fails (namespace/deployment/pod not found), consider that the user may be looking at a different cluster. ")
+	b.WriteString("Ask the user if they want to switch kubeconfig, and call list_kubeconfigs to show available options.\n\n")
+
 	// Safety rules
 	b.WriteString("## Safety Rules\n")
 	b.WriteString("Phase 1: you may ONLY use read-only tools. Never attempt write operations ")

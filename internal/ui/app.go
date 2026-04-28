@@ -2,6 +2,9 @@ package ui
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -26,6 +29,7 @@ type AppModel struct {
 	help          HelpModel
 	podDetail     PodDetailModel
 	historySearch HistorySearchModel
+	kubeSwitch    KubeSwitchModel
 
 	logBuffer *RingBuffer
 
@@ -38,10 +42,12 @@ type AppModel struct {
 	k8sClient k8s.Client
 	config    *config.Config
 	program   *tea.Program
+
+	configManager config.Manager
 }
 
 // NewAppModel creates the root model with injected dependencies.
-func NewAppModel(a agent.Agent, k k8s.Client, cfg *config.Config, historyStore history.Store) AppModel {
+func NewAppModel(a agent.Agent, k k8s.Client, cfg *config.Config, historyStore history.Store, cfgManager config.Manager) AppModel {
 	theme := GetTheme(cfg.UI.Theme)
 
 	bufSize := cfg.UI.LogLinesLimit
@@ -70,12 +76,14 @@ func NewAppModel(a agent.Agent, k k8s.Client, cfg *config.Config, historyStore h
 		help:          NewHelpModel(theme),
 		podDetail:     NewPodDetailModel(k, theme),
 		historySearch: NewHistorySearchModel(historyStore, theme),
+		kubeSwitch:    NewKubeSwitchModel(theme),
 		logBuffer:     logBuffer,
 		focus:         PanelResource,
 		layout:        LayoutFull,
 		agent:         a,
 		k8sClient:     k,
 		config:        cfg,
+		configManager: cfgManager,
 	}
 }
 
@@ -175,6 +183,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// If kubeSwitch overlay is visible, route all keys there
+		if m.kubeSwitch.Visible() {
+			var cmd tea.Cmd
+			m.kubeSwitch, cmd = m.kubeSwitch.Update(msg)
+			return m, cmd
+		}
+
 		switch msg.String() {
 		case "tab":
 			m.focus = m.nextFocus(1)
@@ -203,6 +218,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, textinput.Blink
 		case "?":
 			m.help.Toggle()
+			return m, nil
+		case "ctrl+k":
+			m.openKubeSwitch()
 			return m, nil
 		case "q":
 			if m.focus != PanelChat {
@@ -268,6 +286,22 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusbar.SetLayout(m.layout)
 				}
 			}
+		}
+		// If agent triggers kubeconfig switch
+		if msg.Type == agent.EventKubeSwitch && msg.SwitchContext != "" {
+			kp := msg.SwitchKubeconfig
+			if kp == "" {
+				kp2, _ := m.k8sClient.ContextInfo()
+				kp = kp2
+			}
+			switchKube := kp
+			switchCtx := msg.SwitchContext
+			cmds = append(cmds, func() tea.Msg {
+				return kubeSwitchExecuteMsg{
+					Kubeconfig: switchKube,
+					Context:    switchCtx,
+				}
+			})
 		}
 		return m, tea.Batch(cmds...)
 
@@ -349,6 +383,62 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.help.Toggle()
 		return m, nil
 
+	case showKubeSwitchMsg:
+		m.openKubeSwitch()
+		return m, nil
+
+	case kubeSwitchExecuteMsg:
+		if m.chat.isRunning && m.chat.cancelFunc != nil {
+			m.chat.cancelFunc()
+			m.chat.isRunning = false
+			m.chat.cancelFunc = nil
+		}
+		m.kubeSwitch.SetConnecting()
+		kubeconfig := msg.Kubeconfig
+		ctxName := msg.Context
+		return m, func() tea.Msg {
+			if err := m.k8sClient.Reconnect(kubeconfig, ctxName); err != nil {
+				return kubeSwitchCompleteMsg{Err: err}
+			}
+			return kubeSwitchCompleteMsg{Kubeconfig: kubeconfig, ContextName: ctxName}
+		}
+
+	case kubeSwitchCompleteMsg:
+		if msg.Err != nil {
+			m.kubeSwitch.ShowError(msg.Err)
+			return m, nil
+		}
+		m.kubeSwitch.Close()
+
+		// Persist to config
+		if m.configManager != nil {
+			m.config.Kubernetes.Kubeconfig = msg.Kubeconfig
+			m.config.Kubernetes.DefaultContext = msg.ContextName
+			_ = m.configManager.Save(m.config)
+		}
+
+		// Reset resource browser and log viewer (Chat preserved)
+		reloadCmd := m.resource.Reset()
+		m.logviewer.Reset()
+
+		// Update status bar
+		m.statusbar.SetContext(msg.ContextName)
+		m.statusbar.SetNamespace("")
+
+		// Update agent cluster context
+		m.agent.SetClusterContext(agent.ClusterContext{ContextName: msg.ContextName})
+
+		// Ensure full layout
+		m.layout = LayoutFull
+		m.statusbar.SetLayout(m.layout)
+
+		m.chat.addMessage(ChatMessage{
+			Role:    "status",
+			Content: fmt.Sprintf("Switched to context: %s", msg.ContextName),
+		})
+
+		return m, reloadCmd
+
 	case showPodDetailMsg:
 		dim := CalculateLayout(m.width, m.height, m.layout)
 		m.podDetail.SetDimensions(max(dim.ResourceW-2, 1), max(dim.ResourceH-2, 1))
@@ -405,6 +495,11 @@ func (m AppModel) View() string {
 	// Terminal too small warning
 	if IsTerminalTooSmall(m.width, m.height) {
 		return TerminalTooSmallMsg(m.width, m.height)
+	}
+
+	// KubeSwitch overlay takes precedence over everything except terminal-too-small
+	if m.kubeSwitch.Visible() {
+		return m.kubeSwitch.View(m.width, m.height)
 	}
 
 	// Help overlay takes over
@@ -665,4 +760,23 @@ func parseNavigateToolArgs(args map[string]string) (NavigateToResourceMsg, bool)
 		Namespace: args["namespace"],
 		Name:      name,
 	}, true
+}
+
+// openKubeSwitch opens the kubeconfig switch overlay if the agent is not running.
+func (m *AppModel) openKubeSwitch() {
+	if m.chat.isRunning {
+		return
+	}
+	kp, ctx := m.k8sClient.ContextInfo()
+	envKube := os.Getenv("KUBECONFIG")
+	m.kubeSwitch.Show(kp, ctx, kubeHomeDir(), envKube)
+}
+
+// kubeHomeDir returns the default ~/.kube directory path.
+func kubeHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return os.TempDir()
+	}
+	return filepath.Join(home, ".kube")
 }

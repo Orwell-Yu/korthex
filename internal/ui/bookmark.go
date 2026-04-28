@@ -177,6 +177,13 @@ func (m BookmarkModel) Update(msg tea.Msg) (BookmarkModel, bool) {
 	return m, false
 }
 
+// Clear removes all bookmarks.
+func (m *BookmarkModel) Clear() {
+	m.entries = nil
+	m.overlay = false
+	m.cursor = 0
+}
+
 // ShowOverlay opens the bookmark list overlay.
 func (m *BookmarkModel) ShowOverlay() {
 	m.overlay = true

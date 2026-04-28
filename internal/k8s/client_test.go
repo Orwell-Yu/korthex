@@ -288,6 +288,29 @@ func TestListEventsForResource(t *testing.T) {
 	assert.Equal(t, "Pod/order-abc", events[0].Object)
 }
 
+func TestContextInfo_BeforeConnect(t *testing.T) {
+	c := NewClient()
+	kp, ctx := c.ContextInfo()
+	if kp != "" || ctx != "" {
+		t.Errorf("expected empty before connect, got kp=%q ctx=%q", kp, ctx)
+	}
+}
+
+func TestContextInfo_DirectAccess(t *testing.T) {
+	c := &k8sClient{
+		kubeconfigPath: "/test/kubeconfig",
+		context:        "test-ctx",
+		connected:      true,
+	}
+	kp, ctx := c.ContextInfo()
+	if kp != "/test/kubeconfig" {
+		t.Errorf("expected /test/kubeconfig, got %s", kp)
+	}
+	if ctx != "test-ctx" {
+		t.Errorf("expected test-ctx, got %s", ctx)
+	}
+}
+
 func TestDescribePod(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

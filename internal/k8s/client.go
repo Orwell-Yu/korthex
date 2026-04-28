@@ -15,8 +15,10 @@ import (
 type Client interface {
 	Connect(kubeconfig, context string) error
 	Disconnect()
+	Reconnect(kubeconfig, context string) error
 	IsConnected() bool
 	CurrentContext() string
+	ContextInfo() (kubeconfig string, context string)
 
 	Resources() ResourceLister
 	Logs() LogStreamer
@@ -61,11 +63,12 @@ type ResourceDescriber interface {
 
 // k8sClient is the concrete implementation of Client.
 type k8sClient struct {
-	mu         sync.RWMutex
-	clientset  kubernetes.Interface
-	restConfig *rest.Config
-	context    string
-	connected  bool
+	mu             sync.RWMutex
+	clientset      kubernetes.Interface
+	restConfig     *rest.Config
+	context        string
+	kubeconfigPath string
+	connected      bool
 
 	informers *InformerManager
 	resources *resourceLister
@@ -120,6 +123,7 @@ func (c *k8sClient) Connect(kubeconfig, ctx string) error {
 	c.restConfig = restConfig
 	c.context = resolvedContext
 	c.connected = true
+	c.kubeconfigPath = kubeconfig
 
 	c.informers = NewInformerManager(clientset, 10)
 	c.resources = &resourceLister{clientset: clientset, informers: c.informers}
@@ -147,6 +151,7 @@ func (c *k8sClient) Disconnect() {
 	c.clientset = nil
 	c.restConfig = nil
 	c.context = ""
+	c.kubeconfigPath = ""
 	c.connected = false
 	c.informers = nil
 	c.resources = nil
@@ -169,6 +174,72 @@ func (c *k8sClient) CurrentContext() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.context
+}
+
+// ContextInfo returns the kubeconfig path and context name.
+func (c *k8sClient) ContextInfo() (string, string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.kubeconfigPath, c.context
+}
+
+// Reconnect validates a new connection and hot-swaps it in place of the old one.
+// If validation fails, the old connection remains intact.
+func (c *k8sClient) Reconnect(kubeconfig, ctx string) error {
+	// Build new config outside lock
+	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}
+	overrides := &clientcmd.ConfigOverrides{}
+	if ctx != "" {
+		overrides.CurrentContext = ctx
+	}
+	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides)
+
+	restConfig, err := clientConfig.ClientConfig()
+	if err != nil {
+		return fmt.Errorf("build rest config: %w", err)
+	}
+	newClientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return fmt.Errorf("create clientset: %w", err)
+	}
+
+	// Validate new connection
+	if _, err := newClientset.Discovery().ServerVersion(); err != nil {
+		return fmt.Errorf("validate connection: %w", err)
+	}
+
+	// Resolve context
+	rawConfig, err := clientConfig.RawConfig()
+	if err != nil {
+		return fmt.Errorf("load raw config: %w", err)
+	}
+	resolvedContext := rawConfig.CurrentContext
+	if ctx != "" {
+		resolvedContext = ctx
+	}
+
+	// Lock and swap
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.informers != nil {
+		c.informers.StopAll()
+	}
+
+	c.clientset = newClientset
+	c.restConfig = restConfig
+	c.context = resolvedContext
+	c.kubeconfigPath = kubeconfig
+	c.connected = true
+
+	c.informers = NewInformerManager(newClientset, 10)
+	c.resources = &resourceLister{clientset: newClientset, informers: c.informers}
+	c.logs = &logStreamer{clientset: newClientset, resources: c.resources}
+	c.events = &eventLister{clientset: newClientset}
+	c.describer = &resourceDescriber{clientset: newClientset, events: c.events}
+
+	slog.Debug("k8s reconnected", "context", resolvedContext, "kubeconfig", kubeconfig)
+	return nil
 }
 
 func (c *k8sClient) Resources() ResourceLister {

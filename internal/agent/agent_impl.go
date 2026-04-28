@@ -205,6 +205,22 @@ func (a *agentImpl) Execute(ctx context.Context, userQuery string, ch chan<- Age
 			}
 			a.history.AppendToolResult(tc.ID, tc.Name, llmResult)
 			a.persistMessage(ctx, "tool_result", llmResult)
+
+			// Special: switch_kubeconfig emits EventKubeSwitch for UI (only on successful validation)
+			if tc.Name == "switch_kubeconfig" && !strings.HasPrefix(result, "ERROR") {
+				kc := tc.Arguments["kubeconfig"]
+				if kc == "" {
+					if te, ok := a.tools.(*toolExecutor); ok {
+						kp, _ := te.k8sClient.ContextInfo()
+						kc = kp
+					}
+				}
+				ch <- AgentEvent{
+					Type:             EventKubeSwitch,
+					SwitchKubeconfig: kc,
+					SwitchContext:    tc.Arguments["context"],
+				}
+			}
 		}
 
 		// Loop continues: LLM sees tool results on next iteration

@@ -66,6 +66,7 @@ var helpSections = []helpSection{
 			{"Esc", "Exit mode / go back"},
 			{"Scroll", "Scroll focused panel"},
 			{"Copy text", "iTerm2: Opt+Drag | Terminal.app: fn+Drag | Other: Shift+Drag"},
+			{"Ctrl+K", "Switch kubeconfig/context"},
 		},
 	},
 	{
@@ -108,6 +109,7 @@ var helpSections = []helpSection{
 			{"Ctrl+D/PgDn", "Scroll down half page"},
 			{"Ctrl+C", "Cancel operation"},
 			{"/history", "Search conversation history"},
+			{"/kubeconfig", "Switch kubeconfig/context"},
 			{"/clear", "Clear chat messages"},
 			{"/help", "Show this help overlay"},
 			{"Esc", "Unfocus chat"},

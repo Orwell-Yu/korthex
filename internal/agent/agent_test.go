@@ -139,7 +139,7 @@ func TestExecute_SingleToolCall_Success(t *testing.T) {
 			}
 		case EventComplete:
 			hasComplete = true
-		case EventStreamDelta, EventLogsReady, EventError:
+		case EventStreamDelta, EventLogsReady, EventError, EventKubeSwitch:
 			// not asserted in this test
 		}
 	}
@@ -364,6 +364,8 @@ func TestSafetyChecker_AllowsAllReadOnlyTools(t *testing.T) {
 		"get_pod_metrics",
 		"trace_logs",
 		"bookmark_log_lines",
+		"list_kubeconfigs",
+		"switch_kubeconfig",
 	}
 
 	for _, tool := range tools {

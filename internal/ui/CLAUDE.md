@@ -40,6 +40,7 @@
 | 18 | **Pod 详情面板是覆盖层** — 与 describe overlay (resource.go) 相同模式。非新 PanelID。Pod 列表中按 `d` 触发，`Esc` 关闭 | 复用现有 overlay 模式, 不改布局 |
 | 19 | **历史搜索覆盖层** — Chat 中 `/history` 触发全屏覆盖层。通过 history.Store 做 FTS5 搜索。选中的会话摘要以 `[Previous context from ...]` 块注入当前对话上下文 | overlay 模式一致 |
 | 20 | **资源类型切换 (1-5 键)** — 仅在 focus 为 PanelResource 且导航层级在 namespace 内 (非 namespace 列表) 时激活。`Esc` 重置资源类型为 Deployments。Header 显示当前类型 + 数量 | 数字键仅在 namespace drill-down 层级有意义 |
+| 21 | **Ctrl+K 全局 Kubeconfig 切换** — `Ctrl+K` 打开 KubeSwitchModel 覆盖层 (任何 focus 下均可触发)。`/kubeconfig` slash command 也触发同一覆盖层。两步选择: kubeconfig 文件 → context。覆盖层内支持 fuzzy 搜索。切换成功后 Resource 面板和 Log Viewer 重置, Chat 历史保留 | 多集群/多 context 操作是 K8s 常见场景, 全局热键保证随时可达 |
 
 ## Panel Architecture
 
@@ -72,13 +73,14 @@ AppModel (tea.Model)
 | `poddetail.go` | Pod 详情覆盖层: conditions, events, container status, metrics 展示 (Metrics API 优雅降级) | 不要创建新 PanelID, 用 overlay 模式 |
 | `bookmark.go` | BookmarkEntry 类型, 书签列表覆盖层, toggle/navigate/delete 逻辑, Ring Buffer 联动清理 | 最多 50 个, 不持久化 |
 | `history.go` | 历史搜索覆盖层: TextInput 搜索框, FTS5 查询, 会话列表, 上下文注入 | `/history` 触发, Esc 关闭 |
+| `kubeswitch.go` | KubeSwitchModel 覆盖层: 两步选择 (kubeconfig file → context), fuzzy 搜索, `kubeSwitchExecuteMsg`/`kubeSwitchCompleteMsg` 消息类型, `openKubeSwitch()` 入口方法 | `Ctrl+K` 或 `/kubeconfig` 触发, Esc 关闭 |
 | `markdown.go` | Glamour 渲染封装: 主题映射 (dark/light/dracula/nord → StyleConfig), 渲染缓存, 异步 tea.Cmd 渲染, 失败降级 | 不在 streaming 期间调用 glamour |
 
 ## Keyboard Routing Priority
 
 ```
 1. tea.WindowSizeMsg     → always: recalculate layout, propagate
-2. Global hotkeys        → Tab, Shift+Tab, F1-F3, :, ?, q, Ctrl+C
+2. Global hotkeys        → Tab, Shift+Tab, F1-F3, :, ?, q, Ctrl+C, Ctrl+K (kubeswitch)
 3. Focused panel         → delegate to ResourceModel/LogViewerModel/ChatModel
 4. Custom messages       → route by type (not by focus)
 ```
@@ -104,6 +106,9 @@ AppModel.Update(AgentEventMsg):
   → if EventToolCall for navigate_resource_browser:
        resource.Update(NavigateToResourceMsg)  // sync left panel with Name highlight
        ensure LayoutFull                       // make resource panel visible
+  → if EventKubeSwitch:
+       k8s.Reconnect → reset Resource/LogViewer → persist config
+       chat history preserved across switch
 ```
 
 ## Cross-Module Dependencies

@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -426,8 +428,8 @@ func TestToolDefinitions_Count(t *testing.T) {
 	executor := newTestToolExecutor(mockK8s)
 
 	defs := executor.ToolDefinitions()
-	if len(defs) != 19 {
-		t.Errorf("expected 19 tool definitions, got %d", len(defs))
+	if len(defs) != 21 {
+		t.Errorf("expected 21 tool definitions, got %d", len(defs))
 	}
 
 	expectedNames := []string{
@@ -451,6 +453,9 @@ func TestToolDefinitions_Count(t *testing.T) {
 		"get_pod_metrics",
 		"trace_logs",
 		"bookmark_log_lines",
+		// Cluster switching
+		"list_kubeconfigs",
+		"switch_kubeconfig",
 	}
 
 	for i, name := range expectedNames {
@@ -824,5 +829,132 @@ func TestCommandDisplay_LogViewerTools(t *testing.T) {
 	got = GenerateCommandDisplay("search_visible_logs", map[string]string{"pattern": "ERROR|WARN"})
 	if !strings.Contains(got, "grep -E") || !strings.Contains(got, "ERROR|WARN") {
 		t.Errorf("got %q", got)
+	}
+}
+
+func newTestKubeconfig(t *testing.T) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+	kubeconfigPath := filepath.Join(tmpDir, "config")
+	content := `apiVersion: v1
+kind: Config
+contexts:
+- context:
+    cluster: prod-cluster
+    user: admin
+  name: prod
+- context:
+    cluster: staging-cluster
+    user: dev
+  name: staging
+current-context: prod
+clusters:
+- cluster:
+    server: https://prod:6443
+  name: prod-cluster
+users:
+- name: admin
+  user: {}
+`
+	if err := os.WriteFile(kubeconfigPath, []byte(content), 0600); err != nil {
+		t.Fatalf("failed to write test kubeconfig: %v", err)
+	}
+	return kubeconfigPath
+}
+
+func TestToolExecution_SwitchKubeconfig(t *testing.T) {
+	kubeconfigPath := newTestKubeconfig(t)
+
+	mockK8s := &k8s.MockClient{
+		ContextInfoFunc: func() (string, string) {
+			return kubeconfigPath, "prod"
+		},
+	}
+
+	te := NewToolExecutor(mockK8s).(*toolExecutor)
+
+	result, logs, err := te.ExecuteTool(context.Background(), "switch_kubeconfig",
+		map[string]string{"context": "staging"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if logs != nil {
+		t.Error("switch_kubeconfig should not return log lines")
+	}
+	if !strings.Contains(result, "Switching to context") {
+		t.Errorf("expected success message, got: %s", result)
+	}
+	if !strings.Contains(result, "staging") {
+		t.Errorf("result should mention target context, got: %s", result)
+	}
+}
+
+func TestToolExecution_SwitchKubeconfig_InvalidContext(t *testing.T) {
+	kubeconfigPath := newTestKubeconfig(t)
+
+	mockK8s := &k8s.MockClient{
+		ContextInfoFunc: func() (string, string) {
+			return kubeconfigPath, "prod"
+		},
+	}
+
+	te := NewToolExecutor(mockK8s).(*toolExecutor)
+
+	result, _, err := te.ExecuteTool(context.Background(), "switch_kubeconfig",
+		map[string]string{"context": "nonexistent"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "ERROR") {
+		t.Errorf("expected error result for invalid context, got: %s", result)
+	}
+	if !strings.Contains(result, "not found") {
+		t.Errorf("expected 'not found' in result, got: %s", result)
+	}
+	if !strings.Contains(result, "prod") || !strings.Contains(result, "staging") {
+		t.Errorf("expected available contexts listed, got: %s", result)
+	}
+}
+
+func TestToolExecution_SwitchKubeconfig_MissingContext(t *testing.T) {
+	mockK8s := &k8s.MockClient{}
+
+	te := NewToolExecutor(mockK8s).(*toolExecutor)
+
+	result, _, err := te.ExecuteTool(context.Background(), "switch_kubeconfig",
+		map[string]string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "ERROR: context parameter is required") {
+		t.Errorf("expected error about missing context param, got: %s", result)
+	}
+}
+
+func TestCommandDisplay_SwitchKubeconfig(t *testing.T) {
+	tests := []struct {
+		name string
+		args map[string]string
+		want string
+	}{
+		{
+			name: "context only",
+			args: map[string]string{"context": "staging"},
+			want: "kubectl config use-context staging",
+		},
+		{
+			name: "with kubeconfig",
+			args: map[string]string{"context": "staging", "kubeconfig": "/home/user/.kube/config"},
+			want: "kubectl config use-context staging --kubeconfig=/home/user/.kube/config",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GenerateCommandDisplay("switch_kubeconfig", tt.args)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

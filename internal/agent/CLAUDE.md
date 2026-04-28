@@ -27,7 +27,7 @@
 | 8 | **LLM 调用重试** — `ErrRateLimit`/`ErrTimeout` 时自动重试 1 次（指数退避），`ErrAuth`/`ErrModelUnavailable` 不重试 | PRD §6.7 承诺"自动重试 1 次"。llm adapter 只分类错误不重试，agent 层兑现此承诺 |
 | 9 | **脱敏管道** — 所有含日志内容的 tool result 在追加到 LLM 消息历史前必须经过 `pkg/redact` Engine。脱敏统计以 `[Redaction: N items masked]` 格式附加。仅 `privacy.redaction.enabled=true` 时激活 | PRD §5.1: 日志发给 LLM 前必须脱敏 |
 | 10 | **历史持久化** — 每条用户消息和 AI 回复通过 `history.Store.AddMessage()` 实时写入。Tool result 超过 2000 字符存储压缩版本 (500 + 统计) | PRD §3.2: 对话历史持久化 |
-| 11 | **Phase 2 安全白名单** — SafetyChecker 允许 19 个 tools (10 Phase 1 + 9 Phase 2)。新增: kubectl_get_statefulsets, kubectl_get_daemonsets, kubectl_get_jobs, kubectl_get_cronjobs, severity_stats, compare_logs, get_pod_metrics, trace_logs, bookmark_log_lines | Phase 2 新增工具均为只读 |
+| 11 | **Phase 2 安全白名单** — SafetyChecker 允许 20 个 tools (10 Phase 1 + 10 Phase 2)。新增: kubectl_get_statefulsets, kubectl_get_daemonsets, kubectl_get_jobs, kubectl_get_cronjobs, severity_stats, compare_logs, get_pod_metrics, trace_logs, bookmark_log_lines, switch_kubeconfig | Phase 2 新增工具均为只读 (switch_kubeconfig 修改连接但不修改集群状态) |
 
 ## Interfaces (defined in this module)
 
@@ -55,8 +55,8 @@ type SafetyChecker interface {
 | File | Do | Don't |
 |------|-----|-------|
 | `agent.go` | Agentic loop: 构建 messages → 调 LLM → 执行 tool → 反馈 → 迭代 | 不要在这里直接调 k8s API, 通过 ToolExecutor |
-| `tools.go` | Tool name → k8s 操作映射 (19 tools: 10 Phase 1 + 9 Phase 2), label selector 发现, kubectl 命令字符串生成, `filter` 参数名称子串匹配, Resource Registry 集成 (StatefulSet/DaemonSet/Job/CronJob list tools), 分析工具 (severity_stats, compare_logs, get_pod_metrics, trace_logs), bookmark_log_lines, `navigate_resource_browser` UI 导航工具, `get_log_viewer_state`/`search_visible_logs` Log Viewer buffer 读取工具 | 不要绕过 SafetyChecker |
-| `safety.go` | Phase 2 白名单: 19 个只读工具 (10 Phase 1 + 9 Phase 2). 返回 denial reason | 不要硬编码, 用可配置的白名单 map |
+| `tools.go` | Tool name → k8s 操作映射 (20 tools: 10 Phase 1 + 10 Phase 2), label selector 发现, kubectl 命令字符串生成, `filter` 参数名称子串匹配, Resource Registry 集成 (StatefulSet/DaemonSet/Job/CronJob list tools), 分析工具 (severity_stats, compare_logs, get_pod_metrics, trace_logs), bookmark_log_lines, `navigate_resource_browser` UI 导航工具, `get_log_viewer_state`/`search_visible_logs` Log Viewer buffer 读取工具, `switch_kubeconfig` 集群上下文切换工具 | 不要绕过 SafetyChecker |
+| `safety.go` | Phase 2 白名单: 20 个只读工具 (10 Phase 1 + 10 Phase 2). 返回 denial reason | 不要硬编码, 用可配置的白名单 map |
 | `history.go` | FIFO 截断 (max 10 turns), tool result 压缩 (>2000 → 500 + stats), system prompt 始终保留 | 不要删除 system prompt |
 | `prompt.go` | System prompt: 角色定义 + 安全规则 + cluster context + tool 使用指南 + 大集群策略 (filter 使用指导) + Log Viewer TUI 联动指令 + Resource Browser 导航指令 + analysis_mode 指令块 (结构化思维链: 现象→数据→假设→验证→结论) + 扩展资源发现策略 (Deployment→StatefulSet→DaemonSet→Job/CronJob 搜索顺序) + 脱敏感知指令 ([REDACTED] 标记处理) | 可以有 provider-aware 片段 (检查 llm.ProviderName()) |
 
@@ -84,6 +84,7 @@ User Query → [Build Messages] → [Call LLM] → Tool Calls?
 | `EventSummary` | LLM 完成分析 | Chat 面板显示最终摘要 |
 | `EventError` | 错误 (可能重试) | Chat 面板显示错误 |
 | `EventComplete` | Loop 完成 | Chat 面板恢复输入状态 |
+| `EventKubeSwitch` | Agent 请求切换 kubeconfig/context | App 执行 k8s.Reconnect, 重置 Resource/LogViewer, 持久化到 config |
 
 ## Cross-Module Dependencies
 

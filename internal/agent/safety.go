@@ -30,6 +30,8 @@ func NewSafetyChecker() SafetyChecker {
 			"get_pod_metrics":          SafetyAllowed,
 			"trace_logs":               SafetyAllowed,
 			"bookmark_log_lines":       SafetyAllowed,
+			"list_kubeconfigs":         SafetyAllowed,
+			"switch_kubeconfig":        SafetyAllowed,
 		},
 	}
 }

@@ -44,6 +44,10 @@ type AgentEvent struct {
 	CommandDisplay string            // EventToolCall: human-readable kubectl equivalent
 	LogLines       []k8s.LogLine     // EventLogsReady: for Log Viewer display
 	StreamDelta    string            // EventStreamDelta: LLM incremental text
+
+	// EventKubeSwitch fields
+	SwitchKubeconfig string // kubeconfig path (empty = keep current)
+	SwitchContext    string // target context name
 }
 
 // AgentEventType enumerates the types of agent events.
@@ -57,6 +61,7 @@ const (
 	EventSummary                           // Final analysis summary
 	EventError                             // Error (may trigger retry)
 	EventComplete                          // Agentic loop completed
+	EventKubeSwitch                        // Agent requests kubeconfig/context switch
 )
 
 // ToolExecutor dispatches tool calls to K8s operations.

@@ -540,3 +540,238 @@ llm:
 	assert.Equal(t, "openai", cfg.LLM.Provider)
 	assert.Equal(t, "https://api.example.com", cfg.LLM.BaseURL)
 }
+
+// --- ParseContexts Tests ---
+
+func writeKubeconfig(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	require.NoError(t, os.WriteFile(p, []byte(content), 0644))
+	return p
+}
+
+const multiContextKubeconfig = `apiVersion: v1
+kind: Config
+current-context: staging
+contexts:
+- name: dev
+  context:
+    cluster: dev-cluster
+    user: dev-user
+- name: staging
+  context:
+    cluster: staging-cluster
+    user: staging-user
+- name: prod
+  context:
+    cluster: prod-cluster
+    user: prod-user
+clusters:
+- name: dev-cluster
+- name: staging-cluster
+- name: prod-cluster
+users:
+- name: dev-user
+- name: staging-user
+- name: prod-user
+`
+
+const singleContextKubeconfig = `apiVersion: v1
+kind: Config
+current-context: only
+contexts:
+- name: only
+  context:
+    cluster: only-cluster
+    user: only-user
+`
+
+const noContextKubeconfig = `apiVersion: v1
+kind: Config
+`
+
+func TestParseContexts_MultipleContexts(t *testing.T) {
+	dir := t.TempDir()
+	p := writeKubeconfig(t, dir, "config", multiContextKubeconfig)
+
+	ctxs, err := ParseContexts(p)
+	require.NoError(t, err)
+	require.Len(t, ctxs, 3)
+
+	assert.Equal(t, "dev", ctxs[0].Name)
+	assert.Equal(t, "dev-cluster", ctxs[0].Cluster)
+	assert.Equal(t, "dev-user", ctxs[0].User)
+	assert.False(t, ctxs[0].Current)
+
+	assert.Equal(t, "staging", ctxs[1].Name)
+	assert.Equal(t, "staging-cluster", ctxs[1].Cluster)
+	assert.Equal(t, "staging-user", ctxs[1].User)
+	assert.True(t, ctxs[1].Current)
+
+	assert.Equal(t, "prod", ctxs[2].Name)
+	assert.Equal(t, "prod-cluster", ctxs[2].Cluster)
+	assert.Equal(t, "prod-user", ctxs[2].User)
+	assert.False(t, ctxs[2].Current)
+}
+
+func TestParseContexts_SingleContext(t *testing.T) {
+	dir := t.TempDir()
+	p := writeKubeconfig(t, dir, "config", singleContextKubeconfig)
+
+	ctxs, err := ParseContexts(p)
+	require.NoError(t, err)
+	require.Len(t, ctxs, 1)
+
+	assert.Equal(t, "only", ctxs[0].Name)
+	assert.Equal(t, "only-cluster", ctxs[0].Cluster)
+	assert.Equal(t, "only-user", ctxs[0].User)
+	assert.True(t, ctxs[0].Current)
+}
+
+func TestParseContexts_NoContexts(t *testing.T) {
+	dir := t.TempDir()
+	p := writeKubeconfig(t, dir, "config", noContextKubeconfig)
+
+	ctxs, err := ParseContexts(p)
+	require.NoError(t, err)
+	assert.Empty(t, ctxs)
+}
+
+func TestParseContexts_FileNotFound(t *testing.T) {
+	_, err := ParseContexts("/nonexistent/kubeconfig")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading kubeconfig")
+}
+
+func TestParseContexts_InvalidYAML(t *testing.T) {
+	dir := t.TempDir()
+	p := writeKubeconfig(t, dir, "config", "{{invalid yaml")
+
+	_, err := ParseContexts(p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing kubeconfig")
+}
+
+func TestParseContexts_NoCurrentContext(t *testing.T) {
+	dir := t.TempDir()
+	content := `apiVersion: v1
+kind: Config
+contexts:
+- name: alpha
+  context:
+    cluster: alpha-cluster
+    user: alpha-user
+`
+	p := writeKubeconfig(t, dir, "config", content)
+
+	ctxs, err := ParseContexts(p)
+	require.NoError(t, err)
+	require.Len(t, ctxs, 1)
+	assert.Equal(t, "alpha", ctxs[0].Name)
+	assert.False(t, ctxs[0].Current)
+}
+
+// --- DiscoverKubeconfigs Tests ---
+
+func TestDiscoverKubeconfigs_KubeDir(t *testing.T) {
+	dir := t.TempDir()
+	writeKubeconfig(t, dir, "config", singleContextKubeconfig)
+	writeKubeconfig(t, dir, "config-staging", multiContextKubeconfig)
+	// Should be excluded: .lock file
+	writeKubeconfig(t, dir, "config.lock", "ignored")
+	// Should be excluded: non-config file
+	writeKubeconfig(t, dir, "other.yaml", "ignored")
+	// Should be excluded: directory named config-dir
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "config-dir"), 0755))
+
+	entries := DiscoverKubeconfigs(dir, "")
+	require.Len(t, entries, 2)
+
+	// Sorted by path
+	assert.Contains(t, entries[0].Path, "config")
+	assert.Contains(t, entries[1].Path, "config-staging")
+	assert.Equal(t, 1, entries[0].ContextCount)
+	assert.Equal(t, 3, entries[1].ContextCount)
+}
+
+func TestDiscoverKubeconfigs_EnvKubeconfig(t *testing.T) {
+	dir := t.TempDir()
+	p1 := writeKubeconfig(t, dir, "kc1", singleContextKubeconfig)
+	p2 := writeKubeconfig(t, dir, "kc2", multiContextKubeconfig)
+
+	envVal := p1 + ":" + p2
+	entries := DiscoverKubeconfigs("", envVal)
+	require.Len(t, entries, 2)
+
+	// Sorted by path
+	paths := []string{entries[0].Path, entries[1].Path}
+	assert.Contains(t, paths, p1)
+	assert.Contains(t, paths, p2)
+}
+
+func TestDiscoverKubeconfigs_EnvAndDir_Deduplicated(t *testing.T) {
+	dir := t.TempDir()
+	p := writeKubeconfig(t, dir, "config", singleContextKubeconfig)
+
+	// Same file referenced in both env and dir
+	entries := DiscoverKubeconfigs(dir, p)
+	require.Len(t, entries, 1)
+	assert.Equal(t, p, entries[0].Path)
+	assert.Equal(t, 1, entries[0].ContextCount)
+}
+
+func TestDiscoverKubeconfigs_EnvNonexistentIgnored(t *testing.T) {
+	entries := DiscoverKubeconfigs("", "/nonexistent/path1:/nonexistent/path2")
+	assert.Empty(t, entries)
+}
+
+func TestDiscoverKubeconfigs_EmptyInputs(t *testing.T) {
+	entries := DiscoverKubeconfigs("", "")
+	assert.Empty(t, entries)
+}
+
+func TestDiscoverKubeconfigs_NonexistentDir(t *testing.T) {
+	entries := DiscoverKubeconfigs("/nonexistent/dir", "")
+	assert.Empty(t, entries)
+}
+
+func TestDiscoverKubeconfigs_EnvDirectoryIgnored(t *testing.T) {
+	dir := t.TempDir()
+	// Directory should be skipped in env path
+	entries := DiscoverKubeconfigs("", dir)
+	assert.Empty(t, entries)
+}
+
+func TestDiscoverKubeconfigs_SortedByPath(t *testing.T) {
+	dir := t.TempDir()
+	writeKubeconfig(t, dir, "config-z", singleContextKubeconfig)
+	writeKubeconfig(t, dir, "config-a", singleContextKubeconfig)
+	writeKubeconfig(t, dir, "config-m", singleContextKubeconfig)
+
+	entries := DiscoverKubeconfigs(dir, "")
+	require.Len(t, entries, 3)
+
+	assert.Contains(t, entries[0].Path, "config-a")
+	assert.Contains(t, entries[1].Path, "config-m")
+	assert.Contains(t, entries[2].Path, "config-z")
+}
+
+func TestDiscoverKubeconfigs_InvalidFileCountsZero(t *testing.T) {
+	dir := t.TempDir()
+	writeKubeconfig(t, dir, "config", "{{not valid yaml")
+
+	entries := DiscoverKubeconfigs(dir, "")
+	require.Len(t, entries, 1)
+	assert.Equal(t, 0, entries[0].ContextCount)
+}
+
+func TestDiscoverKubeconfigs_EnvEmptyPathsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	p := writeKubeconfig(t, dir, "kc", singleContextKubeconfig)
+
+	// Empty segments should be ignored
+	envVal := ":" + p + "::"
+	entries := DiscoverKubeconfigs("", envVal)
+	require.Len(t, entries, 1)
+	assert.Equal(t, p, entries[0].Path)
+}

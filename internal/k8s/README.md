@@ -16,9 +16,11 @@ All Kubernetes cluster interaction. Resource discovery via Informer/Cache (zero 
 // Client is the top-level K8s interface, aggregating all sub-interfaces
 type Client interface {
     Connect(kubeconfig, context string) error
+    Reconnect(kubeconfig, context string) error  // hot reconnect: validate new before teardown old
     Disconnect()
     IsConnected() bool
     CurrentContext() string
+    ContextInfo() (kubeconfigPath string, contextName string)  // current kubeconfig path + context
 
     Resources() ResourceLister
     Logs() LogStreamer
@@ -64,7 +66,7 @@ func AccessorFor(resourceType string) (ResourceAccessor, bool)
 
 | File | Responsibility |
 |------|---------------|
-| `client.go` | Client implementation, kubeconfig loading, rest.Config creation, factory lifecycle |
+| `client.go` | Client implementation, kubeconfig loading, rest.Config creation, factory lifecycle, Reconnect (validate-before-teardown hot switch), ContextInfo |
 | `informer.go` | Informer factory management: per-namespace factories, LRU eviction (10 slots), 30s grace period, 10min resync, atomic dedup on refresh. **See [CLAUDE.md](./CLAUDE.md) for full LRU + grace period state machine.** |
 | `resources.go` | ResourceLister using DynamicSharedInformerFactory + Lister. `SearchResources` uses sahilm/fuzzy |
 | `logs.go` | LogStreamer: per-container goroutine, bufio.Scanner, buffered channel (cap=50), non-blocking send |
@@ -123,3 +125,14 @@ K8s API (io.ReadCloser per container)
 
 - Add `WatchResource` for real-time resource status updates
 - Add Phase 3 write operation methods (Scale, Restart, Delete)
+
+### Hot Reconnect (Reconnect)
+```
+Reconnect(newKubeconfig, newContext)
+  1. Build new rest.Config from newKubeconfig/newContext
+  2. Create new clientset, verify connectivity (ServerVersion())
+  3. On success: teardown old informers + clientset
+  4. Swap to new clientset
+  5. On failure: return error, old connection untouched
+```
+- `ContextInfo()` returns `(kubeconfigPath, contextName)` for the active connection, used by UI status bar and config persistence.

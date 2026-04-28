@@ -29,6 +29,7 @@ type slashCommand struct {
 // slashCommands is the static registry of available slash commands.
 var slashCommands = []slashCommand{
 	{Name: "history", Description: "Search conversation history"},
+	{Name: "kubeconfig", Description: "Switch kubeconfig / context"},
 	{Name: "clear", Description: "Clear chat messages"},
 	{Name: "help", Description: "Show keyboard shortcuts"},
 }
@@ -349,6 +350,8 @@ func (m ChatModel) executeSlashCommand(name string) (ChatModel, tea.Cmd) {
 	switch name {
 	case "history":
 		return m, func() tea.Msg { return showHistorySearchMsg{} }
+	case "kubeconfig":
+		return m, func() tea.Msg { return showKubeSwitchMsg{} }
 	case "clear":
 		m.messages = nil
 		m.collapsedTurns = 0
@@ -418,6 +421,9 @@ func (m ChatModel) handleAgentEvent(ev agent.AgentEvent) (ChatModel, tea.Cmd) {
 		// Defer scrollToBottom until after markdown render updates line counts
 		m.forceScrollToBottom()
 		return m, tea.Batch(renderCmds...)
+
+	case agent.EventKubeSwitch:
+		// Handled at AppModel level
 	}
 	m.scrollToBottom()
 	return m, nil

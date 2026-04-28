@@ -42,7 +42,7 @@ type Wizard interface {
 
 | File | Do | Don't |
 |------|-----|-------|
-| `config.go` | Viper load/save, env override, Validate | 不要在这里做 K8s 连接测试 |
+| `config.go` | Viper load/save, env override, Validate, `DiscoverKubeconfigs()` runtime kubeconfig file discovery, `ParseContexts()` kubeconfig context extraction | 不要在这里做 K8s 连接测试 |
 | `wizard.go` | Bubble Tea mini-program, 步骤状态机 | 不要启动主 TUI，Wizard 是独立 program |
 | `config_test.go` | Table-driven: load/validate/env/defaults | 不要 mock Viper，直接用临时文件 |
 

@@ -3,11 +3,14 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Orwell-Yu/korthex/internal/config"
 	"github.com/Orwell-Yu/korthex/internal/k8s"
 	"github.com/Orwell-Yu/korthex/internal/llm"
 	"github.com/Orwell-Yu/korthex/pkg/logparse"
@@ -195,6 +198,20 @@ func (t *toolExecutor) ToolDefinitions() []llm.ToolDefinition {
 				{Name: "reason", Type: "string", Description: "Reason for bookmarking (shown in bookmark list)", Required: false},
 			},
 		},
+		// Cluster switching
+		{
+			Name:        "list_kubeconfigs",
+			Description: "List all available kubeconfig files under ~/.kube/ and their contexts. Use BEFORE switch_kubeconfig to show the user what clusters are available.",
+			Parameters:  []llm.ParameterDef{},
+		},
+		{
+			Name:        "switch_kubeconfig",
+			Description: "Switch to a different Kubernetes cluster by changing kubeconfig file and/or context. Use when user asks to switch cluster, change context, or connect to a different environment (e.g. 'switch to staging', 'connect to prod cluster'). Returns available contexts for confirmation.",
+			Parameters: []llm.ParameterDef{
+				{Name: "kubeconfig", Type: "string", Description: "Path to kubeconfig file. Leave empty to keep current file.", Required: false},
+				{Name: "context", Type: "string", Description: "Context name to switch to.", Required: true},
+			},
+		},
 	}
 }
 
@@ -242,6 +259,11 @@ func (t *toolExecutor) ExecuteTool(ctx context.Context, name string, args map[st
 	// Phase 2: UI tool
 	case "bookmark_log_lines":
 		return t.bookmarkLogLines(args)
+	// Cluster switching
+	case "list_kubeconfigs":
+		return t.listKubeconfigs()
+	case "switch_kubeconfig":
+		return t.switchKubeconfig(args)
 	default:
 		return "", nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -355,6 +377,14 @@ func GenerateCommandDisplay(name string, args map[string]string) string {
 		return fmt.Sprintf("[Analysis] trace %q (visible logs)", args["traceID"])
 	case "bookmark_log_lines":
 		return fmt.Sprintf("[TUI] bookmark lines %s", args["lineIndices"])
+	case "list_kubeconfigs":
+		return "ls ~/.kube/ && kubectl config get-contexts"
+	case "switch_kubeconfig":
+		cmd := "kubectl config use-context " + args["context"]
+		if kc := args["kubeconfig"]; kc != "" {
+			cmd += " --kubeconfig=" + kc
+		}
+		return cmd
 	default:
 		return name
 	}
@@ -1119,6 +1149,85 @@ func (t *toolExecutor) bookmarkLogLines(args map[string]string) (string, []k8s.L
 	// We return a message that describes what was bookmarked.
 	return fmt.Sprintf("Bookmarked %d log lines (indices: %s). Reason: %s. "+
 		"Press ' to view bookmarks, n/N to navigate between them.", len(parsed), indices, reason), nil, nil
+}
+
+func (t *toolExecutor) listKubeconfigs() (string, []k8s.LogLine, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "ERROR: cannot determine home directory", nil, nil
+	}
+	kubeDir := filepath.Join(home, ".kube")
+	envKC := os.Getenv("KUBECONFIG")
+
+	entries := config.DiscoverKubeconfigs(kubeDir, envKC)
+	if len(entries) == 0 {
+		return "No kubeconfig files found in ~/.kube/ or $KUBECONFIG.", nil, nil
+	}
+
+	// Current context for reference
+	currentKC, currentCtx := t.k8sClient.ContextInfo()
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Current: context=%q kubeconfig=%q\n\n", currentCtx, currentKC)
+	fmt.Fprintf(&b, "Available kubeconfig files (%d):\n", len(entries))
+
+	for _, e := range entries {
+		fmt.Fprintf(&b, "\n## %s (%d contexts)\n", e.Path, e.ContextCount)
+		ctxs, err := config.ParseContexts(e.Path)
+		if err != nil {
+			fmt.Fprintf(&b, "  (error reading: %v)\n", err)
+			continue
+		}
+		for _, c := range ctxs {
+			marker := "  "
+			if e.Path == currentKC && c.Name == currentCtx {
+				marker = "* "
+			}
+			fmt.Fprintf(&b, "  %s%s (cluster: %s)\n", marker, c.Name, c.Cluster)
+		}
+	}
+
+	b.WriteString("\nTo switch, call switch_kubeconfig with context=<name> and optionally kubeconfig=<path>.")
+	return b.String(), nil, nil
+}
+
+func (t *toolExecutor) switchKubeconfig(args map[string]string) (string, []k8s.LogLine, error) {
+	ctx := args["context"]
+	if ctx == "" {
+		return "ERROR: context parameter is required", nil, nil
+	}
+
+	kubeconfig := args["kubeconfig"]
+	if kubeconfig == "" {
+		kp, _ := t.k8sClient.ContextInfo()
+		kubeconfig = kp
+	}
+
+	if kubeconfig == "" {
+		return "ERROR: no kubeconfig path available. Please specify the kubeconfig parameter.", nil, nil
+	}
+
+	ctxs, err := config.ParseContexts(kubeconfig)
+	if err != nil {
+		return fmt.Sprintf("ERROR: cannot read kubeconfig %s: %v", kubeconfig, err), nil, nil
+	}
+
+	found := false
+	for _, c := range ctxs {
+		if c.Name == ctx {
+			found = true
+			break
+		}
+	}
+	if !found {
+		available := make([]string, 0, len(ctxs))
+		for _, c := range ctxs {
+			available = append(available, c.Name)
+		}
+		return fmt.Sprintf("ERROR: context %q not found in %s. Available contexts: %s", ctx, kubeconfig, strings.Join(available, ", ")), nil, nil
+	}
+
+	return fmt.Sprintf("Switching to context %q (kubeconfig: %s). The UI will perform the connection switch.", ctx, kubeconfig), nil, nil
 }
 
 // --- Helpers ---
