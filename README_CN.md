@@ -97,25 +97,37 @@ Korthex 把 **Claude Code 式的 AI 对话** 和 **k9s 级别的终端 UI** 融�
 
 ## 环境要求
 
-- **Go 1.24+** — [安装](https://go.dev/dl/)
 - **kubectl 已配置** — 有效的 `~/.kube/config`（或 `KUBECONFIG` 环境变量）且能访问集群
 - **LLM API Key** — OpenAI / Anthropic / Gemini / 或任何 OpenAI 兼容端点（任选其一）
+- **Go 1.24+** — 仅[从源码构建](#从源码构建)时需要（[安装](https://go.dev/dl/)）
 
 ## 快速开始
 
+### 通过 Homebrew 安装（macOS / Linux）
+
 ```bash
-# 从源码构建
+brew tap Orwell-Yu/tap
+brew install korthex
+```
+
+### 从源码构建
+
+```bash
 git clone https://github.com/Orwell-Yu/korthex.git
 cd Korthex
 make build      # → bin/korthex
+```
 
+### 运行
+
+```bash
 # 设置 LLM API Key（任选一个）
 export OPENAI_API_KEY="sk-..."
 # export ANTHROPIC_API_KEY="sk-ant-..."
 # export GEMINI_API_KEY="..."
 
 # 启动 — 首次运行自动进入配置向导
-./bin/korthex
+korthex
 ```
 
 ### 命令行参数

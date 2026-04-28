@@ -91,25 +91,37 @@ Korthex fuses **Claude Code-style AI conversation** with a **k9s-grade terminal 
 
 ## Prerequisites
 
-- **Go 1.24+** — [install](https://go.dev/dl/)
 - **kubectl configured** — a valid `~/.kube/config` (or `KUBECONFIG` env var) with cluster access
 - **LLM API key** — one of: OpenAI, Anthropic, Gemini, or any OpenAI-compatible endpoint
+- **Go 1.24+** — only needed if [building from source](#build-from-source) ([install](https://go.dev/dl/))
 
 ## Quick Start
 
+### Install via Homebrew (macOS / Linux)
+
 ```bash
-# Build from source
+brew tap Orwell-Yu/tap
+brew install korthex
+```
+
+### Build from Source
+
+```bash
 git clone https://github.com/Orwell-Yu/korthex.git
 cd Korthex
 make build      # → bin/korthex
+```
 
+### Run
+
+```bash
 # Set your LLM API key (pick one)
 export OPENAI_API_KEY="sk-..."
 # export ANTHROPIC_API_KEY="sk-ant-..."
 # export GEMINI_API_KEY="..."
 
 # Run — setup wizard launches on first run
-./bin/korthex
+korthex
 ```
 
 ### CLI Flags
