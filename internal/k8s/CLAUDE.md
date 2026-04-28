@@ -23,15 +23,18 @@
 | 7 | **Pod 状态感知** — Succeeded/Failed/Deleted 状态的 Pod 停止重试 | 不在死 Pod 上浪费资源 |
 | 8 | **Resource Registry 模式** — 新增资源类型 (StatefulSet/DaemonSet/Job/CronJob) 通过 `ResourceAccessor` 注册到 `registry.go`。UI/Agent 通过 `AccessorFor()` 查询，新增资源类型不需要修改调用方代码 | k9s DAO Registry 模式借鉴, 可扩展性 |
 | 9 | **Informer 按需启动** — 新资源类型的 Informer (AppsV1().StatefulSets(), BatchV1().Jobs() 等) 首次访问时启动，不在启动时创建。遵循现有 per-namespace LRU 模式 | 避免启动时创建未使用的 Informer, 节省内存和 API Server watch 连接 |
+| 10 | **Reconnect 先验后拆** — `Reconnect()` 必须先验证新 kubeconfig/context 连接成功，再 teardown 旧连接。失败时旧连接不受影响 | 避免切换失败后无法恢复，保证任何时刻都有可用连接 |
 
 ## Interfaces (defined in this module)
 
 ```go
 type Client interface {
     Connect(kubeconfig, context string) error
+    Reconnect(kubeconfig, context string) error  // hot reconnect: validate new before teardown old
     Disconnect()
     IsConnected() bool
     CurrentContext() string
+    ContextInfo() (kubeconfigPath string, contextName string)  // returns current kubeconfig path and context
     Resources() ResourceLister
     Logs() LogStreamer
     Events() EventLister
@@ -45,7 +48,7 @@ type Client interface {
 
 | File | Do | Don't |
 |------|-----|-------|
-| `client.go` | kubeconfig 加载, rest.Config, Connect/Disconnect | 不要在这里做资源查询 |
+| `client.go` | kubeconfig 加载, rest.Config, Connect/Disconnect, Reconnect (validate-before-teardown), ContextInfo | 不要在这里做资源查询 |
 | `informer.go` | per-ns factory 管理, LRU 驱逐 (10 slots), 10min resync | 不要创建全局 informer (除 all-ns 模式) |
 | `resources.go` | 从 Lister 读, fuzzy search (sahilm/fuzzy) | 不要直接调 API Server List() |
 | `logs.go` | per-container goroutine, buffered channel (cap=50), non-blocking send | 不要阻塞 send, 不要无限 buffer |

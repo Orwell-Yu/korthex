@@ -26,18 +26,19 @@ import (
 // App is the top-level application lifecycle manager.
 // It wires all modules together and manages startup/shutdown.
 type App struct {
-	config       *config.Config
-	k8sClient    k8s.Client
-	llmProvider  llm.Provider
-	agent        agent.Agent
-	logFile      *os.File
-	historyStore history.Store
-	sessionID    string
+	config        *config.Config
+	configManager config.Manager
+	k8sClient     k8s.Client
+	llmProvider   llm.Provider
+	agent         agent.Agent
+	logFile       *os.File
+	historyStore  history.Store
+	sessionID     string
 }
 
 // New creates a new App instance, initializing all dependencies in order:
 // logging → K8s client → LLM provider → agent.
-func New(cfg *config.Config) (*App, error) {
+func New(cfg *config.Config, cfgManager config.Manager) (*App, error) {
 	// 1. Setup logging (slog → file, per SPEC §6.8)
 	logDir := filepath.Join(os.TempDir(), "korthex")
 	if err := os.MkdirAll(logDir, 0750); err != nil {
@@ -131,20 +132,21 @@ func New(cfg *config.Config) (*App, error) {
 	agentInstance := agent.New(llmProvider, k8sClient, parser, cfg.Agent, cfg.LLM.SendLogs, redactEngine, historyStore, sessionID)
 
 	return &App{
-		config:       cfg,
-		k8sClient:    k8sClient,
-		llmProvider:  llmProvider,
-		agent:        agentInstance,
-		logFile:      logFile,
-		historyStore: historyStore,
-		sessionID:    sessionID,
+		config:        cfg,
+		configManager: cfgManager,
+		k8sClient:     k8sClient,
+		llmProvider:   llmProvider,
+		agent:         agentInstance,
+		logFile:       logFile,
+		historyStore:  historyStore,
+		sessionID:     sessionID,
 	}, nil
 }
 
 // Run starts the Bubble Tea TUI and blocks until it exits.
 // It monitors ctx for cancellation (e.g. SIGTERM) and gracefully quits the TUI.
 func (a *App) Run(ctx context.Context) error {
-	appModel := ui.NewAppModel(a.agent, a.k8sClient, a.config, a.historyStore)
+	appModel := ui.NewAppModel(a.agent, a.k8sClient, a.config, a.historyStore, a.configManager)
 	a.agent.SetLogBufferReader(appModel.LogBuffer())
 	p := tea.NewProgram(&appModel, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	appModel.SetProgram(p)

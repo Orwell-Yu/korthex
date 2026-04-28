@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 // Config is the root configuration struct for Korthex.
@@ -94,6 +96,20 @@ type KubeDetection struct {
 	KubeconfigPath string
 	Contexts       []string
 	CurrentContext string
+}
+
+// KubeconfigEntry represents a discovered kubeconfig file.
+type KubeconfigEntry struct {
+	Path         string // absolute path
+	ContextCount int    // number of contexts in this file
+}
+
+// ContextEntry represents a context within a kubeconfig file.
+type ContextEntry struct {
+	Name    string // context name
+	Cluster string // associated cluster name
+	User    string // associated user name
+	Current bool   // is this the file's current-context
 }
 
 // Wizard drives the first-run setup wizard.
@@ -430,4 +446,117 @@ func homeDir() string {
 		return os.TempDir()
 	}
 	return home
+}
+
+// kubeconfigYAML is a minimal struct for parsing kubeconfig files.
+type kubeconfigYAML struct {
+	CurrentContext string `yaml:"current-context"`
+	Contexts       []struct {
+		Name    string `yaml:"name"`
+		Context struct {
+			Cluster string `yaml:"cluster"`
+			User    string `yaml:"user"`
+		} `yaml:"context"`
+	} `yaml:"contexts"`
+}
+
+// DiscoverKubeconfigs scans for kubeconfig files and returns them sorted by path.
+// kubeDir is the directory to scan for config* files (typically ~/.kube).
+// envKubeconfig is the raw $KUBECONFIG value (colon-separated paths).
+func DiscoverKubeconfigs(kubeDir, envKubeconfig string) []KubeconfigEntry {
+	seen := make(map[string]bool)
+	var paths []string
+
+	// 1. Parse $KUBECONFIG-style paths
+	if envKubeconfig != "" {
+		for _, p := range filepath.SplitList(envKubeconfig) {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			abs, err := filepath.Abs(p)
+			if err != nil {
+				continue
+			}
+			info, err := os.Stat(abs)
+			if err != nil || info.IsDir() {
+				continue
+			}
+			if !seen[abs] {
+				seen[abs] = true
+				paths = append(paths, abs)
+			}
+		}
+	}
+
+	// 2. Scan kubeDir for files matching config* (exclude .lock and directories)
+	if kubeDir != "" {
+		entries, err := os.ReadDir(kubeDir)
+		if err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				name := e.Name()
+				if !strings.HasPrefix(name, "config") {
+					continue
+				}
+				if strings.HasSuffix(name, ".lock") {
+					continue
+				}
+				abs, err := filepath.Abs(filepath.Join(kubeDir, name))
+				if err != nil {
+					continue
+				}
+				if !seen[abs] {
+					seen[abs] = true
+					paths = append(paths, abs)
+				}
+			}
+		}
+	}
+
+	// 3. Sort by path
+	sort.Strings(paths)
+
+	// 4. Build entries with context count
+	entries := make([]KubeconfigEntry, 0, len(paths))
+	for _, p := range paths {
+		ctxs, err := ParseContexts(p)
+		count := 0
+		if err == nil {
+			count = len(ctxs)
+		}
+		entries = append(entries, KubeconfigEntry{
+			Path:         p,
+			ContextCount: count,
+		})
+	}
+
+	return entries
+}
+
+// ParseContexts parses a kubeconfig file and returns its contexts.
+func ParseContexts(kubeconfigPath string) ([]ContextEntry, error) {
+	data, err := os.ReadFile(kubeconfigPath) //nolint:gosec // kubeconfig path is user-provided by design
+	if err != nil {
+		return nil, fmt.Errorf("reading kubeconfig %s: %w", kubeconfigPath, err)
+	}
+
+	var kc kubeconfigYAML
+	if err := yaml.Unmarshal(data, &kc); err != nil {
+		return nil, fmt.Errorf("parsing kubeconfig %s: %w", kubeconfigPath, err)
+	}
+
+	entries := make([]ContextEntry, 0, len(kc.Contexts))
+	for _, c := range kc.Contexts {
+		entries = append(entries, ContextEntry{
+			Name:    c.Name,
+			Cluster: c.Context.Cluster,
+			User:    c.Context.User,
+			Current: c.Name == kc.CurrentContext,
+		})
+	}
+
+	return entries, nil
 }

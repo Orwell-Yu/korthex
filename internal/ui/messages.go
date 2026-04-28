@@ -97,3 +97,19 @@ type showHelpMsg struct{}
 type historySessionLoadedMsg struct {
 	Messages []ChatMessage
 }
+
+// showKubeSwitchMsg triggers the KubeSwitch overlay.
+type showKubeSwitchMsg struct{}
+
+// kubeSwitchExecuteMsg is sent when user confirms kubeconfig+context selection.
+type kubeSwitchExecuteMsg struct {
+	Kubeconfig string
+	Context    string
+}
+
+// kubeSwitchCompleteMsg carries the result of a kubeconfig switch attempt.
+type kubeSwitchCompleteMsg struct {
+	Kubeconfig  string // kubeconfig path on success
+	ContextName string // new context name on success
+	Err         error  // non-nil on failure
+}

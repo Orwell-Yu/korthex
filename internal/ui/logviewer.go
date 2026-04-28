@@ -593,6 +593,27 @@ type logExportedMsg struct {
 	path string
 }
 
+// Reset clears log state for cluster switch.
+func (m *LogViewerModel) Reset() {
+	if m.logCancel != nil {
+		m.logCancel()
+		m.logCancel = nil
+	}
+	m.buffer.Clear()
+	m.lines = nil
+	m.lineToBuffer = nil
+	m.scrollOff = 0
+	m.scrollX = 0
+	m.follow = true
+	m.lastBufferBase = 0
+	m.namespace = ""
+	m.podName = ""
+	m.container = ""
+	m.clearSearch()
+	m.clearFilter()
+	m.bookmarks.Clear()
+}
+
 // View renders the log viewer panel.
 func (m LogViewerModel) View() string {
 	// Bookmark overlay takes precedence

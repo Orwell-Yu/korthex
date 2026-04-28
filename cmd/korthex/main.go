@@ -100,7 +100,7 @@ func main() {
 		cancel()
 	}()
 
-	a, err := app.New(cfg)
+	a, err := app.New(cfg, mgr)
 	stopSplash()
 	if err != nil {
 		fatal(err)

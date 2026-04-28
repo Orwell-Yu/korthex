@@ -152,8 +152,10 @@ func (m *MockResourceDescriber) Describe(ns, kind, name string) (string, error) 
 type MockClient struct {
 	ConnectFunc        func(kubeconfig, context string) error
 	DisconnectFunc     func()
+	ReconnectFunc      func(kubeconfig, context string) error
 	IsConnectedFunc    func() bool
 	CurrentContextFunc func() string
+	ContextInfoFunc    func() (string, string)
 
 	MockResources *MockResourceLister
 	MockLogs      *MockLogStreamer
@@ -174,6 +176,13 @@ func (m *MockClient) Disconnect() {
 	}
 }
 
+func (m *MockClient) Reconnect(kubeconfig, ctx string) error {
+	if m.ReconnectFunc != nil {
+		return m.ReconnectFunc(kubeconfig, ctx)
+	}
+	return nil
+}
+
 func (m *MockClient) IsConnected() bool {
 	if m.IsConnectedFunc != nil {
 		return m.IsConnectedFunc()
@@ -186,6 +195,13 @@ func (m *MockClient) CurrentContext() string {
 		return m.CurrentContextFunc()
 	}
 	return "mock-context"
+}
+
+func (m *MockClient) ContextInfo() (string, string) {
+	if m.ContextInfoFunc != nil {
+		return m.ContextInfoFunc()
+	}
+	return "", ""
 }
 
 func (m *MockClient) Resources() ResourceLister {

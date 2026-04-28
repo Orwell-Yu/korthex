@@ -18,15 +18,16 @@
 | 3 | **Graceful shutdown** — 必须处理 SIGTERM, 通过 context cancellation 传播 (SIGINT 由 Bubble Tea 原生处理 Ctrl+C) | 防止日志流 goroutine 泄漏 |
 | 4 | **Wizard 先于 TUI** — config.NeedsSetup() 时先运行 Wizard, 完成后再启动主 TUI | Wizard 是独立 tea.Program, 不是主 TUI 的一部分 |
 | 5 | **ValidateConnection 在启动时** — LLM Provider 和 K8s 连接必须在 TUI 启动前验证 | 提前发现配置错误, 避免 TUI 启动后再报错 |
-| 6 | **Phase 2 DI 顺序** — redact.NewEngine 在 agent.New 之前, history.NewStore 在 agent.New 和 ui.NewAppModel 之前。完整顺序: config → k8s → llm → redact → history(+cleanup+session) → agent(+redact,+history) → ui(+history) → tea.Program | history.Store 被 agent 和 ui 双消费; redact.Engine 被 agent 消费 |
+| 6 | **Phase 2 DI 顺序** — redact.NewEngine 在 agent.New 之前, history.NewStore 在 agent.New 和 ui.NewAppModel 之前。完整顺序: config → k8s → llm → redact → history(+cleanup+session) → agent(+redact,+history) → ui(+history,+configManager) → tea.Program | history.Store 被 agent 和 ui 双消费; redact.Engine 被 agent 消费; configManager 被 ui 消费 (kubeconfig 切换持久化) |
 
 ## Startup Sequence
 
 ```
 main.go:
   0. startSplash()               // ASCII logo + Braille art + spinner animation
-  1. config.NewManager().Load()
-     → NeedsSetup? → config.NewWizard().Run() → config.Save()
+  1. configManager = config.NewManager()
+     configManager.Load()
+     → NeedsSetup? → config.NewWizard().Run() → configManager.Save()
   2. k8s.NewClient().Connect(kubeconfig, context)
   3. llm.NewRegistry().Create(llmConfig)
      → llm.ValidateConnection(ctx)
@@ -36,7 +37,7 @@ main.go:
      → historyStore.CreateSession(ctx, k8sClient.CurrentContext())
   4. agent.New(llmProvider, k8sClient, logparse.NewParser(), redactEngine, historyStore, cfg.Agent)
   stopSplash()                    // stop spinner animation
-  5. ui.NewAppModel(agent, k8sClient, cfg)
+  5. ui.NewAppModel(agent, k8sClient, cfg, configManager)  // configManager for kubeconfig persistence
   6. tea.NewProgram(appModel, tea.WithAltScreen()).Run()
 ```
 
@@ -46,7 +47,7 @@ main.go:
 
 | File | Do | Don't |
 |------|-----|-------|
-| `app.go` | App struct, Run() entry point, graceful shutdown | 不要在这里放 UI 渲染逻辑 |
+| `app.go` | App struct (with `configManager config.Manager` field), Run() entry point, graceful shutdown, kubeconfig switch persistence | 不要在这里放 UI 渲染逻辑 |
 | `cmd/korthex/main.go` | Flag parsing, DI wiring, App construction | 不要超过 100 行, 所有逻辑在 App.Run() |
 
 ## Cross-Module Dependencies

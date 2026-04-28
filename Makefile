@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt run clean vet ci
+.PHONY: build test lint fmt run clean vet ci sync-github
 
 BINARY := korthex
 BUILD_DIR := bin
@@ -40,6 +40,27 @@ release: ## Create a release (requires goreleaser)
 
 release-snapshot: ## Create a snapshot release (local only)
 	goreleaser release --snapshot --clean
+
+## GitHub Sync
+
+GITHUB_AUTHOR_NAME := mio
+GITHUB_AUTHOR_EMAIL := freegalaxy@foxmail.com
+GITHUB_REMOTE := github
+GITHUB_BRANCH := github-main
+MAIN_BRANCH := main
+
+sync-github: ## Squash-merge main into github-main and push to GitHub
+	@echo "=== Syncing $(MAIN_BRANCH) → $(GITHUB_BRANCH) ==="
+	@CURRENT=$$(git rev-parse --abbrev-ref HEAD); \
+	git checkout $(GITHUB_BRANCH) && \
+	git merge $(MAIN_BRANCH) --squash --allow-unrelated-histories && \
+	GIT_COMMITTER_NAME="$(GITHUB_AUTHOR_NAME)" \
+	GIT_COMMITTER_EMAIL="$(GITHUB_AUTHOR_EMAIL)" \
+	git commit --author="$(GITHUB_AUTHOR_NAME) <$(GITHUB_AUTHOR_EMAIL)>" \
+		-m "sync: squash merge from $(MAIN_BRANCH) $$(git log $(MAIN_BRANCH) -1 --format='(%h)')" && \
+	git push $(GITHUB_REMOTE) $(GITHUB_BRANCH) && \
+	git checkout $$CURRENT && \
+	echo "=== Done! Pushed to $(GITHUB_REMOTE)/$(GITHUB_BRANCH) ==="
 
 ## Cleanup
 

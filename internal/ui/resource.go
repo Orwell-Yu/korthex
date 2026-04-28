@@ -770,6 +770,25 @@ func (m ResourceModel) clampedCursor() int {
 	return indices[c]
 }
 
+// Reset clears resource state for cluster switch. Returns a tea.Cmd to reload namespaces.
+func (m *ResourceModel) Reset() tea.Cmd {
+	m.level = levelNamespace
+	m.cursor = 0
+	m.namespaces = nil
+	m.deployments = nil
+	m.pods = nil
+	m.containers = nil
+	m.resourceItems = nil
+	m.selectedNS = ""
+	m.selectedDep = ""
+	m.selectedPod = ""
+	m.resourceKind = k8s.KindDeployment
+	m.describeResult = ""
+	m.pendingHighlight = ""
+	m.clearSearch()
+	return loadNamespaces(m.k8sClient)
+}
+
 // SetDimensions updates the panel dimensions.
 func (m *ResourceModel) SetDimensions(w, h int) {
 	m.width = w
