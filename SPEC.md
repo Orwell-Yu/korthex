@@ -271,7 +271,7 @@ type LLMConfig struct {
 }
 
 type AgentConfig struct {
-    MaxIterations   int  // Agentic Loop 最大迭代次数 (default: 20)
+    MaxIterations   int  // Agentic Loop 最大迭代次数 (-1 = unlimited, default: -1)
     MaxHistoryTurns int  // 对话上下文保留轮数 (default: 20)
 }
 

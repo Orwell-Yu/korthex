@@ -20,3 +20,11 @@ Thumbs.db
 # Environment
 .env
 .env.*
+
+# Credentials & keys
+credentials.*
+*.pem
+*.key
+
+# Claude Code
+.claude/

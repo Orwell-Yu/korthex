@@ -99,6 +99,43 @@ func (m *AppModel) LogBuffer() *RingBuffer {
 	return m.logBuffer
 }
 
+// panelAtPosition returns which panel occupies the given (x, y) terminal coordinate.
+func (m AppModel) panelAtPosition(x, y int) (PanelID, bool) {
+	dim := CalculateLayout(m.width, m.height, m.layout)
+
+	switch m.layout {
+	case LayoutFull:
+		// Left column: resource browser
+		if x < dim.ResourceW {
+			return PanelResource, true
+		}
+		// Right column: log viewer (top) / chat (bottom)
+		if y < dim.LogViewerH {
+			return PanelLogViewer, true
+		}
+		if y < dim.LogViewerH+dim.ChatH {
+			return PanelChat, true
+		}
+
+	case LayoutChatFocus:
+		// Chat (top) / LogViewer (bottom)
+		if y < dim.ChatH {
+			return PanelChat, true
+		}
+		if y < dim.ChatH+dim.LogViewerH {
+			return PanelLogViewer, true
+		}
+
+	case LayoutLogFocus:
+		usable := max(m.height-statusBarH, 1)
+		if y < usable {
+			return PanelLogViewer, true
+		}
+	}
+
+	return 0, false // status bar or out of bounds
+}
+
 // Init loads the initial namespace list and starts the chat cursor blink.
 func (m AppModel) Init() tea.Cmd {
 	return tea.Batch(loadNamespaces(m.k8sClient), m.chat.Init())
@@ -132,8 +169,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, tea.Batch(cmds...)
 
-	// 2. Mouse scroll → route to focused panel
+	// 2. Mouse events → click-to-focus + scroll routing
 	case tea.MouseMsg:
+		// Left click: focus the panel under the cursor
+		if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+			if panel, ok := m.panelAtPosition(msg.X, msg.Y); ok && panel != m.focus {
+				m.focus = panel
+			}
+			return m, nil
+		}
+
+		// Scroll: route to focused panel
 		switch msg.Button { //nolint:exhaustive // only wheel events are relevant
 		case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
 			switch m.focus {
@@ -300,6 +346,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return kubeSwitchExecuteMsg{
 					Kubeconfig: switchKube,
 					Context:    switchCtx,
+					FromAgent:  true,
 				}
 			})
 		}
@@ -388,7 +435,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case kubeSwitchExecuteMsg:
-		if m.chat.isRunning && m.chat.cancelFunc != nil {
+		// Cancel running agent only if switch was initiated by user (not by the agent itself).
+		// Agent-triggered switches let the agent finish its loop naturally.
+		if !msg.FromAgent && m.chat.isRunning && m.chat.cancelFunc != nil {
 			m.chat.cancelFunc()
 			m.chat.isRunning = false
 			m.chat.cancelFunc = nil

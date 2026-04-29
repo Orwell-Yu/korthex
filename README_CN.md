@@ -265,7 +265,7 @@ llm:
   send_logs: true                  # false = AI 只生成命令，不分析日志内容
 
 agent:
-  max_iterations: 20               # Agentic Loop 最大迭代次数
+  max_iterations: -1               # Agentic Loop 最大迭代次数 (-1 = 无限)
   max_history_turns: 20            # 对话上下文保留轮数
 
 ui:

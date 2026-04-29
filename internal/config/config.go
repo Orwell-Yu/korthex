@@ -39,7 +39,7 @@ type LLMConfig struct {
 }
 
 type AgentConfig struct {
-	MaxIterations   int // Agentic Loop max iterations (default: 20)
+	MaxIterations   int // Agentic Loop max iterations (-1 = unlimited, default: -1)
 	MaxHistoryTurns int // conversation context retained turns (default: 20)
 }
 
@@ -370,8 +370,8 @@ func (m *manager) Validate(cfg *Config) error {
 	}
 
 	// Agent validation
-	if cfg.Agent.MaxIterations <= 0 {
-		errs = append(errs, "agent.max_iterations must be > 0")
+	if cfg.Agent.MaxIterations == 0 || cfg.Agent.MaxIterations < -1 {
+		errs = append(errs, "agent.max_iterations must be > 0 or -1 (unlimited)")
 	}
 	if cfg.Agent.MaxHistoryTurns <= 0 {
 		errs = append(errs, "agent.max_history_turns must be > 0")
@@ -403,7 +403,7 @@ func applyDefaults() *Config {
 			SendLogs:    true,
 		},
 		Agent: AgentConfig{
-			MaxIterations:   20,
+			MaxIterations:   -1,
 			MaxHistoryTurns: 20,
 		},
 		UI: UIConfig{

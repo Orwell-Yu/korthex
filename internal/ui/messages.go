@@ -101,10 +101,12 @@ type historySessionLoadedMsg struct {
 // showKubeSwitchMsg triggers the KubeSwitch overlay.
 type showKubeSwitchMsg struct{}
 
-// kubeSwitchExecuteMsg is sent when user confirms kubeconfig+context selection.
+// kubeSwitchExecuteMsg is sent when user confirms kubeconfig+context selection
+// or when the agent triggers a switch via the switch_kubeconfig tool.
 type kubeSwitchExecuteMsg struct {
 	Kubeconfig string
 	Context    string
+	FromAgent  bool // true when triggered by agent (don't cancel the running agent)
 }
 
 // kubeSwitchCompleteMsg carries the result of a kubeconfig switch attempt.

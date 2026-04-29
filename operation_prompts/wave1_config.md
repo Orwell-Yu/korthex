@@ -47,7 +47,7 @@ Implement `Manager` using Viper:
 - Required: `LLM.Provider` must be one of: openai, anthropic, gemini, custom
 - Required: `LLM.APIKey` must be non-empty
 - Required if custom: `LLM.BaseURL` must be non-empty
-- `Agent.MaxIterations` must be > 0 (default 20)
+- `Agent.MaxIterations` must be > 0 or -1 for unlimited (default -1)
 - `Agent.MaxHistoryTurns` must be > 0 (default 20)
 - `UI.LogLinesLimit` must be > 0 (default 10000)
 - Return all validation errors (not just the first one)

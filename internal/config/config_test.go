@@ -148,7 +148,7 @@ func TestLoad_MissingFile_ReturnsDefaults(t *testing.T) {
 	assert.Equal(t, 0.1, cfg.LLM.Temperature)
 	assert.Equal(t, 4096, cfg.LLM.MaxTokens)
 	assert.Equal(t, true, cfg.LLM.SendLogs)
-	assert.Equal(t, 20, cfg.Agent.MaxIterations)
+	assert.Equal(t, -1, cfg.Agent.MaxIterations)
 	assert.Equal(t, 20, cfg.Agent.MaxHistoryTurns)
 	assert.Equal(t, "dark", cfg.UI.Theme)
 	assert.Equal(t, 10000, cfg.UI.LogLinesLimit)
@@ -237,7 +237,7 @@ func TestValidate(t *testing.T) {
 			name:      "max_iterations zero",
 			modify:    func(cfg *Config) { cfg.Agent.MaxIterations = 0 },
 			wantErr:   true,
-			errSubstr: "agent.max_iterations must be > 0",
+			errSubstr: "agent.max_iterations must be > 0 or -1 (unlimited)",
 		},
 		{
 			name:      "max_history_turns negative",
@@ -287,7 +287,7 @@ func TestValidate_MultipleErrors(t *testing.T) {
 	assert.Contains(t, errStr, "kubernetes.kubeconfig is required")
 	assert.Contains(t, errStr, "llm.provider is required")
 	assert.Contains(t, errStr, "llm.api_key is required")
-	assert.Contains(t, errStr, "agent.max_iterations must be > 0")
+	assert.Contains(t, errStr, "agent.max_iterations must be > 0 or -1 (unlimited)")
 	assert.Contains(t, errStr, "agent.max_history_turns must be > 0")
 	assert.Contains(t, errStr, "ui.log_lines_limit must be > 0")
 }
@@ -471,7 +471,7 @@ llm:
 	assert.Equal(t, 0.1, cfg.LLM.Temperature)
 	assert.Equal(t, 4096, cfg.LLM.MaxTokens)
 	assert.Equal(t, true, cfg.LLM.SendLogs) // Bug A regression: must not be false
-	assert.Equal(t, 20, cfg.Agent.MaxIterations)
+	assert.Equal(t, -1, cfg.Agent.MaxIterations)
 	assert.Equal(t, 20, cfg.Agent.MaxHistoryTurns)
 	assert.Equal(t, "dark", cfg.UI.Theme)
 	assert.Equal(t, 10000, cfg.UI.LogLinesLimit)

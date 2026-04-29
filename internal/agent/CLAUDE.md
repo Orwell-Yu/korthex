@@ -19,7 +19,7 @@
 |---|------|--------|
 | 1 | **Layer 2: 可以 import config, k8s, llm, logparse, history, redact** | 依赖 Layer 0 和 Layer 1，不 import ui |
 | 2 | **Phase 1 安全白名单** — SafetyChecker.Check() 只返回 `SafetyAllowed` (7 个只读 tool) 或 `SafetyDenied`。Phase 3 增加 `SafetyDangerous` / `SafetyCritical` 无需改接口 | Root CLAUDE.md Rule #5 |
-| 3 | **maxIterations 硬限制** — agentic loop 最多迭代 `config.Agent.MaxIterations` 次 (default 20) | 防止 LLM 无限循环调用 tool |
+| 3 | **maxIterations 限制** — agentic loop 最多迭代 `config.Agent.MaxIterations` 次 (-1 = 无限, default -1) | 用户可配置正整数限制迭代次数 |
 | 4 | **Tool result 压缩** — 超过 2000 字符的 tool result 在历史中截断为 500 + 统计摘要 | 避免历史对话吃掉 context window |
 | 5 | **send_logs 配置尊重** — 当 `send_logs=false` 时，tool result 只包含执行状态 (成功/失败/行数)，不包含日志原文 | 数据安全: 用户可能不想发日志给 LLM Provider |
 | 6 | **Error 作为 tool result** — 执行错误以 "ERROR: ..." 格式作为 tool result 发回 LLM，让 LLM 自纠 | 标准 agentic 模式，LLM 能根据错误信息修正下一次调用 |

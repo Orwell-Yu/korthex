@@ -384,16 +384,9 @@ func (m KubeSwitchModel) View(width, height int) string {
 
 	box := boxStyle.Render(content)
 
-	// Center the box in the terminal
-	boxH := lipgloss.Height(box)
-	boxW := lipgloss.Width(box)
-
-	padTop := max((height-boxH)/2, 0)
-	padLeft := max((width-boxW)/2, 0)
-
-	return strings.Repeat("\n", padTop) +
-		strings.Repeat(" ", padLeft) +
-		box
+	// Center the box in the terminal (lipgloss.Place fills the full canvas,
+	// unlike manual padding which only shifts the first line of multi-line content)
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
 }
 
 // --- Render methods ---

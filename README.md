@@ -268,7 +268,7 @@ llm:
   send_logs: true                  # false = AI generates commands only
 
 agent:
-  max_iterations: 20
+  max_iterations: -1               # -1 = unlimited
   max_history_turns: 20
 
 ui:

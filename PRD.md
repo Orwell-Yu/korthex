@@ -205,7 +205,7 @@ llm:
   send_logs: true            # false = AI 仅生成命令，不接收日志内容分析
 
 agent:
-  max_iterations: 20         # Agentic Loop 最大迭代次数
+  max_iterations: -1         # Agentic Loop 最大迭代次数 (-1 = 无限)
   max_history_turns: 20      # AI 对话上下文保留轮数
 
 ui:
@@ -767,7 +767,7 @@ User Input → LLM 生成 Action
 ```
 
 - 每次迭代在 AI Chat 面板展示中间过程（命令 + 错误 + 修正）
-- 配置项 `agent.max_iterations: 20`
+- 配置项 `agent.max_iterations: -1`（默认无限，用户可设置正整数限制）
 - 空结果也视为需要修正的情况（如 namespace 名错误、label 不匹配）
 
 **Label Selector 智能发现策略：**

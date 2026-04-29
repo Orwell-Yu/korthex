@@ -38,8 +38,9 @@ type agentImpl struct {
 // New creates an Agent with the given dependencies.
 func New(provider llm.Provider, k8sClient k8s.Client, parser logparse.Parser, cfg config.AgentConfig, sendLogs bool, redactEngine *redact.Engine, historyStore history.Store, sessionID string) Agent {
 	maxIter := cfg.MaxIterations
-	if maxIter <= 0 {
-		maxIter = 20
+	// -1 means unlimited; 0 or unset also treated as unlimited
+	if maxIter == 0 {
+		maxIter = -1
 	}
 	maxTurns := cfg.MaxHistoryTurns
 	if maxTurns <= 0 {
@@ -91,7 +92,7 @@ func (a *agentImpl) Execute(ctx context.Context, userQuery string, ch chan<- Age
 	a.history.AppendUserMessage(userQuery)
 	a.persistMessage(ctx, "user", userQuery)
 
-	for iteration := 1; iteration <= a.maxIterations; iteration++ {
+	for iteration := 1; a.maxIterations < 0 || iteration <= a.maxIterations; iteration++ {
 		slog.Debug("agentic loop iteration", "iteration", iteration, "maxIterations", a.maxIterations)
 
 		// Call LLM with retry for rate limit / timeout

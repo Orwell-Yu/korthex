@@ -15,7 +15,7 @@ llm:
   send_logs: true                  # false = AI generates commands only, no log analysis
 
 agent:
-  max_iterations: 20               # agentic loop max iterations
+  max_iterations: -1               # agentic loop max iterations (-1 = unlimited)
   max_history_turns: 20            # conversation context retained turns
 
 ui:

@@ -145,14 +145,6 @@ func (m HelpModel) View(width, height int) string {
 
 	content := m.theme.HelpOverlay.Render(b.String())
 
-	// Center the overlay within the terminal.
-	overlayH := lipgloss.Height(content)
-	overlayW := lipgloss.Width(content)
-
-	padTop := max((height-overlayH)/2, 0)
-	padLeft := max((width-overlayW)/2, 0)
-
-	return strings.Repeat("\n", padTop) +
-		strings.Repeat(" ", padLeft) +
-		content
+	// Center the overlay within the terminal (lipgloss.Place fills the full canvas)
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, content)
 }
