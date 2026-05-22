@@ -405,16 +405,29 @@ func convertCronJob(cj *batchv1.CronJob) CronJob {
 }
 
 func convertPod(pod *corev1.Pod) Pod {
-	// TODO(phase2): also process pod.Status.InitContainerStatuses
-	// so pods stuck in Init (e.g. init container CrashLoopBackOff)
-	// expose container info and restart counts to the agent.
-	containers := make([]Container, 0, len(pod.Status.ContainerStatuses))
+	// Build container list from spec (for image/ports) merged with status (for ready/state).
+	statusByName := make(map[string]corev1.ContainerStatus, len(pod.Status.ContainerStatuses))
 	for _, cs := range pod.Status.ContainerStatuses {
-		containers = append(containers, Container{
-			Name:  cs.Name,
-			Ready: cs.Ready,
-			State: containerState(cs.State),
-		})
+		statusByName[cs.Name] = cs
+	}
+
+	containers := make([]Container, 0, len(pod.Spec.Containers))
+	for _, spec := range pod.Spec.Containers {
+		c := Container{
+			Name:  spec.Name,
+			Image: spec.Image,
+		}
+		if cs, ok := statusByName[spec.Name]; ok {
+			c.Ready = cs.Ready
+			c.State = containerState(cs.State)
+		}
+		for _, p := range spec.Ports {
+			c.Ports = append(c.Ports, ContainerPort{
+				ContainerPort: p.ContainerPort,
+				Protocol:      string(p.Protocol),
+			})
+		}
+		containers = append(containers, c)
 	}
 
 	var totalRestarts int32
@@ -427,6 +440,12 @@ func convertPod(pod *corev1.Pod) Pod {
 		age = time.Since(pod.CreationTimestamp.Time)
 	}
 
+	var ownerKind, ownerName string
+	if len(pod.OwnerReferences) > 0 {
+		ownerKind = pod.OwnerReferences[0].Kind
+		ownerName = pod.OwnerReferences[0].Name
+	}
+
 	return Pod{
 		Name:       pod.Name,
 		Namespace:  pod.Namespace,
@@ -436,6 +455,8 @@ func convertPod(pod *corev1.Pod) Pod {
 		Containers: containers,
 		Labels:     pod.Labels,
 		NodeName:   pod.Spec.NodeName,
+		OwnerKind:  ownerKind,
+		OwnerName:  ownerName,
 	}
 }
 

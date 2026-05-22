@@ -1,0 +1,59 @@
+Third-party software notices and licenses
+==========================================
+
+This file contains the notices and licenses for third-party software
+included in or used by this project.
+
+---
+
+charmbracelet/bubbletea
+  License: MIT
+  URL: https://github.com/charmbracelet/bubbletea
+
+charmbracelet/lipgloss
+  License: MIT
+  URL: https://github.com/charmbracelet/lipgloss
+
+charmbracelet/bubbles
+  License: MIT
+  URL: https://github.com/charmbracelet/bubbles
+
+charmbracelet/glamour
+  License: MIT
+  URL: https://github.com/charmbracelet/glamour
+
+spf13/viper
+  License: MIT
+  URL: https://github.com/spf13/viper
+
+cenkalti/backoff/v4
+  License: MIT
+  URL: https://github.com/cenkalti/backoff
+
+sahilm/fuzzy
+  License: MIT
+  URL: https://github.com/sahilm/fuzzy
+
+modernc.org/sqlite
+  License: BSD-3-Clause
+  URL: https://gitlab.com/cznic/sqlite
+
+openai/openai-go
+  License: Apache-2.0
+  URL: https://github.com/openai/openai-go
+
+anthropics/anthropic-sdk-go
+  License: MIT
+  URL: https://github.com/anthropics/anthropic-sdk-go
+
+google/genai (google.golang.org/genai)
+  License: Apache-2.0
+  URL: https://github.com/googleapis/go-genai
+
+xwb1989/sqlparser
+  License: Apache-2.0
+  URL: https://github.com/xwb1989/sqlparser
+
+wasilibs/go-pgquery
+  License: BSD-3-Clause
+  URL: https://github.com/wasilibs/go-pgquery

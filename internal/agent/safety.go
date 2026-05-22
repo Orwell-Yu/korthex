@@ -5,7 +5,7 @@ type safetyChecker struct {
 	whitelist map[string]SafetyLevel
 }
 
-// NewSafetyChecker creates a SafetyChecker with the Phase 1+2 read-only tool whitelist.
+// NewSafetyChecker creates a SafetyChecker with the Phase 1+2+3 read-only tool whitelist.
 func NewSafetyChecker() SafetyChecker {
 	return &safetyChecker{
 		whitelist: map[string]SafetyLevel{
@@ -32,6 +32,12 @@ func NewSafetyChecker() SafetyChecker {
 			"bookmark_log_lines":       SafetyAllowed,
 			"list_kubeconfigs":         SafetyAllowed,
 			"switch_kubeconfig":        SafetyAllowed,
+			// Phase 3: Database tools
+			"discover_databases":  SafetyAllowed,
+			"get_db_credentials":  SafetyAllowed,
+			"get_db_schema":       SafetyAllowed,
+			"query_database":      SafetyAllowed,
+			"get_foreign_keys":    SafetyAllowed,
 		},
 	}
 }

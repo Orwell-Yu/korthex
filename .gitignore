@@ -23,8 +23,13 @@ Thumbs.db
 
 # Credentials & keys
 credentials.*
+!**/credentials.go
+!**/credentials_test.go
 *.pem
 *.key
+
+# Worktrees
+.worktrees/
 
 # Claude Code
 .claude/

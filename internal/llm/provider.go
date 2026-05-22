@@ -16,6 +16,14 @@ const (
 	RoleTool      Role = "tool"
 )
 
+// TokenUsage holds token consumption data from an LLM response.
+type TokenUsage struct {
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
+}
+
 // Message is the cross-provider unified message format.
 type Message struct {
 	Role       Role
@@ -23,6 +31,7 @@ type Message struct {
 	ToolCalls  []ToolCall // assistant requesting tool execution
 	ToolCallID string     // RoleTool: which ToolCall this responds to
 	Name       string     // RoleTool: tool name
+	Usage      TokenUsage // token usage from this response (Phase 3)
 }
 
 // ToolCall represents a tool invocation requested by the LLM.
@@ -54,7 +63,8 @@ type StreamDelta struct {
 	Content    string
 	ToolCall   *ToolCall
 	Done       bool
-	StopReason string // "end_turn", "tool_use", etc.
+	StopReason string      // "end_turn", "tool_use", etc.
+	Usage      *TokenUsage // token usage (typically in final chunk)
 }
 
 // Provider is the unified abstraction for LLM communication.

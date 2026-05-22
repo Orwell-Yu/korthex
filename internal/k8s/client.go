@@ -61,6 +61,18 @@ type ResourceDescriber interface {
 	Describe(namespace, kind, name string) (string, error)
 }
 
+// PodExecutor provides kubectl exec capability for running commands inside pods.
+type PodExecutor interface {
+	ExecInPod(ctx context.Context, namespace, podName, container string, command []string) (stdout []byte, stderr []byte, err error)
+}
+
+// PodInspector provides access to pod spec details (env vars) and K8s secrets.
+type PodInspector interface {
+	GetPodContainerEnvs(namespace, podName string) (map[string][]EnvVar, error)
+	GetPodEnvFromSecrets(namespace, podName string) (map[string][]EnvFromSource, error)
+	GetSecretData(ctx context.Context, namespace, secretName string) (map[string]string, error)
+}
+
 // k8sClient is the concrete implementation of Client.
 type k8sClient struct {
 	mu             sync.RWMutex

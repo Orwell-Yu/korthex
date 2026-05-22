@@ -9,12 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Orwell-Yu/korthex/internal/db"
 	"github.com/Orwell-Yu/korthex/internal/k8s"
 	"github.com/Orwell-Yu/korthex/pkg/logparse"
+	"github.com/Orwell-Yu/korthex/pkg/redact"
 )
 
 func newTestToolExecutor(mockK8s k8s.Client) ToolExecutor {
-	return NewToolExecutor(mockK8s)
+	return NewToolExecutor(mockK8s, nil, nil)
 }
 
 func TestToolExecution_GetNamespaces(t *testing.T) {
@@ -428,8 +430,8 @@ func TestToolDefinitions_Count(t *testing.T) {
 	executor := newTestToolExecutor(mockK8s)
 
 	defs := executor.ToolDefinitions()
-	if len(defs) != 21 {
-		t.Errorf("expected 21 tool definitions, got %d", len(defs))
+	if len(defs) != 26 {
+		t.Errorf("expected 26 tool definitions, got %d", len(defs))
 	}
 
 	expectedNames := []string{
@@ -456,6 +458,12 @@ func TestToolDefinitions_Count(t *testing.T) {
 		// Cluster switching
 		"list_kubeconfigs",
 		"switch_kubeconfig",
+		// Phase 3: Database tools
+		"discover_databases",
+		"get_db_credentials",
+		"get_db_schema",
+		"query_database",
+		"get_foreign_keys",
 	}
 
 	for i, name := range expectedNames {
@@ -691,7 +699,7 @@ func TestToolExecution_GetLogViewerState_Empty(t *testing.T) {
 
 func TestToolExecution_GetLogViewerState_WithLogs(t *testing.T) {
 	mockK8s := &k8s.MockClient{}
-	te := NewToolExecutor(mockK8s).(*toolExecutor)
+	te := NewToolExecutor(mockK8s, nil, nil).(*toolExecutor)
 	te.logBuffer = &mockLogBuffer{
 		entries: []logparse.LogEntry{
 			{PodName: "web-abc", Severity: logparse.SeverityError, Raw: "ERROR: connection refused"},
@@ -721,7 +729,7 @@ func TestToolExecution_GetLogViewerState_WithLogs(t *testing.T) {
 
 func TestToolExecution_SearchVisibleLogs(t *testing.T) {
 	mockK8s := &k8s.MockClient{}
-	te := NewToolExecutor(mockK8s).(*toolExecutor)
+	te := NewToolExecutor(mockK8s, nil, nil).(*toolExecutor)
 	te.logBuffer = &mockLogBuffer{
 		entries: []logparse.LogEntry{
 			{PodName: "web-abc", Raw: "INFO: started server on port 8080"},
@@ -752,7 +760,7 @@ func TestToolExecution_SearchVisibleLogs(t *testing.T) {
 
 func TestToolExecution_SearchVisibleLogs_NoMatch(t *testing.T) {
 	mockK8s := &k8s.MockClient{}
-	te := NewToolExecutor(mockK8s).(*toolExecutor)
+	te := NewToolExecutor(mockK8s, nil, nil).(*toolExecutor)
 	te.logBuffer = &mockLogBuffer{
 		entries: []logparse.LogEntry{
 			{PodName: "web-abc", Raw: "INFO: all good"},
@@ -785,7 +793,7 @@ func TestToolExecution_SearchVisibleLogs_EmptyBuffer(t *testing.T) {
 
 func TestToolExecution_SearchVisibleLogs_InvalidRegex(t *testing.T) {
 	mockK8s := &k8s.MockClient{}
-	te := NewToolExecutor(mockK8s).(*toolExecutor)
+	te := NewToolExecutor(mockK8s, nil, nil).(*toolExecutor)
 	te.logBuffer = &mockLogBuffer{
 		entries: []logparse.LogEntry{{Raw: "test"}},
 	}
@@ -799,7 +807,7 @@ func TestToolExecution_SearchVisibleLogs_InvalidRegex(t *testing.T) {
 
 func TestToolExecution_SearchVisibleLogs_MaxResults(t *testing.T) {
 	mockK8s := &k8s.MockClient{}
-	te := NewToolExecutor(mockK8s).(*toolExecutor)
+	te := NewToolExecutor(mockK8s, nil, nil).(*toolExecutor)
 
 	entries := make([]logparse.LogEntry, 100)
 	for i := range entries {
@@ -871,7 +879,7 @@ func TestToolExecution_SwitchKubeconfig(t *testing.T) {
 		},
 	}
 
-	te := NewToolExecutor(mockK8s).(*toolExecutor)
+	te := NewToolExecutor(mockK8s, nil, nil).(*toolExecutor)
 
 	result, logs, err := te.ExecuteTool(context.Background(), "switch_kubeconfig",
 		map[string]string{"context": "staging"})
@@ -898,7 +906,7 @@ func TestToolExecution_SwitchKubeconfig_InvalidContext(t *testing.T) {
 		},
 	}
 
-	te := NewToolExecutor(mockK8s).(*toolExecutor)
+	te := NewToolExecutor(mockK8s, nil, nil).(*toolExecutor)
 
 	result, _, err := te.ExecuteTool(context.Background(), "switch_kubeconfig",
 		map[string]string{"context": "nonexistent"})
@@ -919,7 +927,7 @@ func TestToolExecution_SwitchKubeconfig_InvalidContext(t *testing.T) {
 func TestToolExecution_SwitchKubeconfig_MissingContext(t *testing.T) {
 	mockK8s := &k8s.MockClient{}
 
-	te := NewToolExecutor(mockK8s).(*toolExecutor)
+	te := NewToolExecutor(mockK8s, nil, nil).(*toolExecutor)
 
 	result, _, err := te.ExecuteTool(context.Background(), "switch_kubeconfig",
 		map[string]string{})
@@ -956,5 +964,91 @@ func TestCommandDisplay_SwitchKubeconfig(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// --- queryDatabase cell-level redaction (M-5) ---
+
+// stubDBService returns a fixed QueryResult and records query parameters.
+type stubDBService struct {
+	result *db.QueryResult
+}
+
+func (s *stubDBService) Discover(ctx context.Context, namespace string) ([]db.DatabaseInfo, error) {
+	return nil, nil
+}
+func (s *stubDBService) GetCredentials(ctx context.Context, namespace, podName string) (*db.Credentials, error) {
+	return nil, nil
+}
+func (s *stubDBService) GetSchema(ctx context.Context, namespace, podName, database string) ([]db.TableSchema, []db.ForeignKey, error) {
+	return nil, nil, nil
+}
+func (s *stubDBService) Query(ctx context.Context, namespace, podName, database, sql string, limit int) (*db.QueryResult, error) {
+	return s.result, nil
+}
+func (s *stubDBService) GetForeignKeys(ctx context.Context, namespace, podName, database, table string) ([]db.ForeignKey, error) {
+	return nil, nil
+}
+
+// TestQueryDatabase_CellRedaction verifies that when a redact engine is attached
+// to the toolExecutor, sensitive data in row cells (emails, IPs, tokens) is
+// masked before the [query_result] JSON envelope is emitted — preventing PII in
+// a `users` table from being shipped raw to the LLM or rendered in the UI.
+func TestQueryDatabase_CellRedaction(t *testing.T) {
+	stub := &stubDBService{
+		result: &db.QueryResult{
+			Columns: []string{"id", "email", "ip"},
+			Rows: [][]string{
+				{"1", "alice@example.com", "10.0.0.5"},
+				{"2", "bob@example.org", "192.168.1.1"},
+			},
+			RowCount: 2,
+		},
+	}
+	engine := redact.NewEngine(redact.RedactionConfig{Enabled: true})
+
+	te := NewToolExecutor(&k8s.MockClient{}, stub, engine).(*toolExecutor)
+
+	out, _, err := te.queryDatabase(context.Background(), map[string]string{
+		"namespace": "default",
+		"podName":   "mysql-0",
+		"database":  "appdb",
+		"sql":       "SELECT id, email, ip FROM users",
+	})
+	if err != nil {
+		t.Fatalf("queryDatabase: %v", err)
+	}
+
+	// Original PII must NOT appear in the result.
+	if strings.Contains(out, "alice@example.com") || strings.Contains(out, "bob@example.org") {
+		t.Errorf("emails should be redacted, got:\n%s", out)
+	}
+	if strings.Contains(out, "10.0.0.5") || strings.Contains(out, "192.168.1.1") {
+		t.Errorf("IPs should be redacted, got:\n%s", out)
+	}
+	if !strings.Contains(out, "[EMAIL_REDACTED]") {
+		t.Errorf("expected [EMAIL_REDACTED] marker, got:\n%s", out)
+	}
+}
+
+// TestQueryDatabase_NoRedactionWhenEngineNil ensures that when redaction is
+// disabled (engine = nil), cell contents pass through verbatim.
+func TestQueryDatabase_NoRedactionWhenEngineNil(t *testing.T) {
+	stub := &stubDBService{
+		result: &db.QueryResult{
+			Columns:  []string{"email"},
+			Rows:     [][]string{{"alice@example.com"}},
+			RowCount: 1,
+		},
+	}
+	te := NewToolExecutor(&k8s.MockClient{}, stub, nil).(*toolExecutor)
+	out, _, err := te.queryDatabase(context.Background(), map[string]string{
+		"namespace": "default", "podName": "mysql-0", "database": "appdb", "sql": "SELECT email FROM u",
+	})
+	if err != nil {
+		t.Fatalf("queryDatabase: %v", err)
+	}
+	if !strings.Contains(out, "alice@example.com") {
+		t.Errorf("expected raw email passthrough when engine is nil, got:\n%s", out)
 	}
 }

@@ -775,3 +775,101 @@ func TestDiscoverKubeconfigs_EnvEmptyPathsIgnored(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, p, entries[0].Path)
 }
+
+// --- Phase 3: Database Config Tests ---
+
+func TestLoad_DatabaseDefaults_WhenSectionMissing(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+
+	// Phase 2 config without database section
+	content := `
+llm:
+  provider: openai
+  api_key: test-key
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0644))
+
+	mgr := NewManager(cfgPath)
+	cfg, err := mgr.Load()
+	require.NoError(t, err)
+
+	// Database defaults must be applied
+	assert.True(t, cfg.Database.Discovery.Enabled)
+	assert.Equal(t, 100, cfg.Database.Query.MaxRowsPerTable)
+	assert.Equal(t, 10, cfg.Database.Query.MaxRelationPaths)
+	assert.Equal(t, 30, cfg.Database.Query.TimeoutSeconds)
+}
+
+func TestLoad_DatabaseSection_LoadsCorrectly(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+
+	content := `
+llm:
+  provider: openai
+  api_key: test-key
+database:
+  discovery:
+    enabled: false
+    image_patterns:
+      - "custom-mysql*"
+      - "my-postgres*"
+  query:
+    max_rows_per_table: 500
+    max_relation_paths: 20
+    timeout_seconds: 60
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0644))
+
+	mgr := NewManager(cfgPath)
+	cfg, err := mgr.Load()
+	require.NoError(t, err)
+
+	assert.False(t, cfg.Database.Discovery.Enabled)
+	assert.Equal(t, []string{"custom-mysql*", "my-postgres*"}, cfg.Database.Discovery.ImagePatterns)
+	assert.Equal(t, 500, cfg.Database.Query.MaxRowsPerTable)
+	assert.Equal(t, 20, cfg.Database.Query.MaxRelationPaths)
+	assert.Equal(t, 60, cfg.Database.Query.TimeoutSeconds)
+}
+
+func TestLoad_TokenMetrics_DefaultsToTrue(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+
+	// Config without token_metrics field
+	content := `
+llm:
+  provider: openai
+  api_key: test-key
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0644))
+
+	mgr := NewManager(cfgPath)
+	cfg, err := mgr.Load()
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Agent.TokenMetrics)
+}
+
+func TestLoad_TokenMetrics_ExplicitFalse(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+
+	content := `
+llm:
+  provider: openai
+  api_key: test-key
+agent:
+  max_iterations: -1
+  max_history_turns: 20
+  token_metrics: false
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0644))
+
+	mgr := NewManager(cfgPath)
+	cfg, err := mgr.Load()
+	require.NoError(t, err)
+
+	assert.False(t, cfg.Agent.TokenMetrics)
+}

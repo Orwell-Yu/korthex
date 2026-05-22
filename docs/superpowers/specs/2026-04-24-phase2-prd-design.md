@@ -44,9 +44,9 @@ Phase 2 的核心跨越：
 
 | 功能 | 原因 | 推迟到 |
 |------|------|--------|
-| Ollama 本地模型支持 | PRD 已标注"往后移，先不做" | Phase 3/4 |
-| 日志可视化（热力图/柱状图） | 用户决策不纳入 Phase 2 | Phase 3 |
-| 集群管理操作（scale/restart/delete） | Phase 3 专属，含三次确认机制 | Phase 3 |
+| Ollama 本地模型支持 | PRD 已标注"往后移，先不做" | Phase 5 |
+| 日志可视化（热力图/柱状图） | 用户决策不纳入 Phase 2 | Phase 5 |
+| 集群管理操作（scale/restart/delete） | 含三次确认机制 | Phase 4 |
 
 ---
 

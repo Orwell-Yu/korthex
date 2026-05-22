@@ -84,6 +84,7 @@ func (p *geminiProvider) ChatStream(ctx context.Context, messages []Message, too
 	slog.Debug("llm stream request", "provider", "gemini", "model", p.model, "tools", len(tools))
 
 	var lastFinishReason genai.FinishReason
+	var lastUsageMetadata *genai.GenerateContentResponseUsageMetadata
 
 	for resp, err := range p.client.Models.GenerateContentStream(ctx, p.model, contents, genConfig) {
 		if err != nil {
@@ -96,6 +97,11 @@ func (p *geminiProvider) ChatStream(ctx context.Context, messages []Message, too
 
 		candidate := resp.Candidates[0]
 		lastFinishReason = candidate.FinishReason
+
+		// Track usage metadata (last one has final totals)
+		if resp.UsageMetadata != nil {
+			lastUsageMetadata = resp.UsageMetadata
+		}
 
 		if candidate.Content == nil {
 			continue
@@ -113,10 +119,18 @@ func (p *geminiProvider) ChatStream(ctx context.Context, messages []Message, too
 	}
 
 	if lastFinishReason != "" {
-		ch <- StreamDelta{
+		sd := StreamDelta{
 			Done:       true,
 			StopReason: string(lastFinishReason),
 		}
+		if lastUsageMetadata != nil {
+			sd.Usage = &TokenUsage{
+				InputTokens:    int(lastUsageMetadata.PromptTokenCount),
+				OutputTokens:   int(lastUsageMetadata.CandidatesTokenCount),
+				CacheReadTokens: int(lastUsageMetadata.CachedContentTokenCount),
+			}
+		}
+		ch <- sd
 	}
 
 	return nil
@@ -271,6 +285,15 @@ func parseGeminiResponse(resp *genai.GenerateContentResponse) (*Message, error) 
 	}
 
 	msg := &Message{Role: RoleAssistant}
+
+	// Extract token usage
+	if resp.UsageMetadata != nil {
+		msg.Usage = TokenUsage{
+			InputTokens:    int(resp.UsageMetadata.PromptTokenCount),
+			OutputTokens:   int(resp.UsageMetadata.CandidatesTokenCount),
+			CacheReadTokens: int(resp.UsageMetadata.CachedContentTokenCount),
+		}
+	}
 
 	for _, part := range candidate.Content.Parts {
 		if part.Text != "" {

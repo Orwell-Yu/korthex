@@ -13,6 +13,7 @@ import (
 
 	"github.com/Orwell-Yu/korthex/internal/agent"
 	"github.com/Orwell-Yu/korthex/internal/config"
+	"github.com/Orwell-Yu/korthex/internal/db"
 	"github.com/Orwell-Yu/korthex/internal/history"
 	"github.com/Orwell-Yu/korthex/internal/k8s"
 	"github.com/Orwell-Yu/korthex/internal/llm"
@@ -127,9 +128,24 @@ func New(cfg *config.Config, cfgManager config.Manager) (*App, error) {
 		}
 	}
 
-	// 6. Create agent
+	// 6. Create database service (Phase 3)
+	var dbService db.DatabaseService
+	if cfg.Database.Discovery.Enabled {
+		podExec, ok := k8sClient.(k8s.PodExecutor)
+		if !ok {
+			return nil, fmt.Errorf("k8s client does not implement PodExecutor (required for DB service)")
+		}
+		podInsp, ok := k8sClient.(k8s.PodInspector)
+		if !ok {
+			return nil, fmt.Errorf("k8s client does not implement PodInspector (required for DB service)")
+		}
+		dbService = db.New(podExec, k8sClient.Resources(), podInsp, cfg.Database)
+		slog.Info("database service enabled")
+	}
+
+	// 7. Create agent
 	parser := logparse.NewParser()
-	agentInstance := agent.New(llmProvider, k8sClient, parser, cfg.Agent, cfg.LLM.SendLogs, redactEngine, historyStore, sessionID)
+	agentInstance := agent.New(llmProvider, k8sClient, parser, cfg.Agent, cfg.LLM.SendLogs, redactEngine, historyStore, sessionID, dbService)
 
 	return &App{
 		config:        cfg,

@@ -21,6 +21,7 @@ type Config struct {
 	Privacy    PrivacyConfig
 	History    HistoryConfig
 	Analysis   AnalysisConfig
+	Database   DatabaseConfig
 }
 
 type KubernetesConfig struct {
@@ -39,8 +40,9 @@ type LLMConfig struct {
 }
 
 type AgentConfig struct {
-	MaxIterations   int // Agentic Loop max iterations (-1 = unlimited, default: -1)
-	MaxHistoryTurns int // conversation context retained turns (default: 20)
+	MaxIterations   int  // Agentic Loop max iterations (-1 = unlimited, default: -1)
+	MaxHistoryTurns int  // conversation context retained turns (default: 20)
+	TokenMetrics    bool // show token metrics in Chat header (default: true)
 }
 
 type UIConfig struct {
@@ -81,6 +83,24 @@ type AnalysisConfig struct {
 type TracePatternConfig struct {
 	Name    string
 	Pattern string
+}
+
+// Phase 3 config types
+
+type DatabaseConfig struct {
+	Discovery DiscoveryConfig `yaml:"discovery" mapstructure:"discovery"`
+	Query     QueryConfig     `yaml:"query" mapstructure:"query"`
+}
+
+type DiscoveryConfig struct {
+	Enabled       bool     `yaml:"enabled" mapstructure:"enabled"`
+	ImagePatterns []string `yaml:"image_patterns" mapstructure:"image_patterns"`
+}
+
+type QueryConfig struct {
+	MaxRowsPerTable  int `yaml:"max_rows_per_table" mapstructure:"max_rows_per_table"`
+	MaxRelationPaths int `yaml:"max_relation_paths" mapstructure:"max_relation_paths"`
+	TimeoutSeconds   int `yaml:"timeout_seconds" mapstructure:"timeout_seconds"`
 }
 
 // Manager provides config load/save/validate capabilities.
@@ -227,6 +247,9 @@ func (m *manager) Load() (*Config, error) {
 	if v.IsSet("agent.max_history_turns") {
 		cfg.Agent.MaxHistoryTurns = v.GetInt("agent.max_history_turns")
 	}
+	if v.IsSet("agent.token_metrics") {
+		cfg.Agent.TokenMetrics = v.GetBool("agent.token_metrics")
+	}
 
 	if v.IsSet("ui.theme") {
 		cfg.UI.Theme = v.GetString("ui.theme")
@@ -274,6 +297,23 @@ func (m *manager) Load() (*Config, error) {
 		}
 	}
 
+	// Phase 3: Database
+	if v.IsSet("database.discovery.enabled") {
+		cfg.Database.Discovery.Enabled = v.GetBool("database.discovery.enabled")
+	}
+	if v.IsSet("database.discovery.image_patterns") {
+		cfg.Database.Discovery.ImagePatterns = v.GetStringSlice("database.discovery.image_patterns")
+	}
+	if v.IsSet("database.query.max_rows_per_table") {
+		cfg.Database.Query.MaxRowsPerTable = v.GetInt("database.query.max_rows_per_table")
+	}
+	if v.IsSet("database.query.max_relation_paths") {
+		cfg.Database.Query.MaxRelationPaths = v.GetInt("database.query.max_relation_paths")
+	}
+	if v.IsSet("database.query.timeout_seconds") {
+		cfg.Database.Query.TimeoutSeconds = v.GetInt("database.query.timeout_seconds")
+	}
+
 	// Env vars always override file values
 	applyEnvOverrides(cfg)
 
@@ -310,6 +350,7 @@ func (m *manager) Save(cfg *Config) error {
 
 	v.Set("agent.max_iterations", cfg.Agent.MaxIterations)
 	v.Set("agent.max_history_turns", cfg.Agent.MaxHistoryTurns)
+	v.Set("agent.token_metrics", cfg.Agent.TokenMetrics)
 
 	v.Set("ui.theme", cfg.UI.Theme)
 	v.Set("ui.log_lines_limit", cfg.UI.LogLinesLimit)
@@ -334,6 +375,15 @@ func (m *manager) Save(cfg *Config) error {
 	if len(cfg.Analysis.TraceIDPatterns) > 0 {
 		v.Set("analysis.trace_id_patterns", cfg.Analysis.TraceIDPatterns)
 	}
+
+	// Phase 3: Database
+	v.Set("database.discovery.enabled", cfg.Database.Discovery.Enabled)
+	if len(cfg.Database.Discovery.ImagePatterns) > 0 {
+		v.Set("database.discovery.image_patterns", cfg.Database.Discovery.ImagePatterns)
+	}
+	v.Set("database.query.max_rows_per_table", cfg.Database.Query.MaxRowsPerTable)
+	v.Set("database.query.max_relation_paths", cfg.Database.Query.MaxRelationPaths)
+	v.Set("database.query.timeout_seconds", cfg.Database.Query.TimeoutSeconds)
 
 	if err := v.WriteConfigAs(m.configPath); err != nil {
 		return fmt.Errorf("writing config file: %w", err)
@@ -405,6 +455,7 @@ func applyDefaults() *Config {
 		Agent: AgentConfig{
 			MaxIterations:   -1,
 			MaxHistoryTurns: 20,
+			TokenMetrics:    true,
 		},
 		UI: UIConfig{
 			Theme:           "dark",
@@ -423,6 +474,16 @@ func applyDefaults() *Config {
 			DBPath:        filepath.Join(homeDir(), ".korthex", "history.db"),
 		},
 		Analysis: AnalysisConfig{},
+		Database: DatabaseConfig{
+			Discovery: DiscoveryConfig{
+				Enabled: true,
+			},
+			Query: QueryConfig{
+				MaxRowsPerTable:  100,
+				MaxRelationPaths: 10,
+				TimeoutSeconds:   30,
+			},
+		},
 	}
 }
 

@@ -838,28 +838,46 @@ AI Chat → Ask follow-up → AI remembers context → Refine query → Updated 
 - [ ] JSON 日志格式化 (自动检测 + 展开)
 - [ ] Previous 日志 (已重启容器的上一次日志)
 
-### Phase 2: Deep Analysis & Enhanced Browser
+### Phase 2: Deep Analysis & Enhanced Browser (done)
 
 **AI 分析增强：**
 - [x] AI 日志分析 (异常检测、错误归因、模式识别)
 - [x] 对话历史持久化 — 本地 SQLite 存储，支持 `/history` 搜索历史对话、按关键词/时间/namespace 过滤
 - [x] Tool 调用结果的智能摘要压缩（上下文窗口优化）
-- [x] Ollama 本地模型支持 — 完全离线使用，日志数据不出本机 (往后移，先不做)
+- [x] AI Chat Markdown 渲染 (glamour)
 
-**日志可视化：**
-- [ ] 日志可视化 (severity 分布柱状图、时间线热力图)
-- [ ] 跨 Service 日志关联 (trace ID / request ID)
-- [ ] 日志 Bookmark & 标注
+**日志增强：**
+- [x] 跨 Service 日志关联 (trace ID / request ID)
+- [x] 日志 Bookmark & 标注
 
 **Resource Browser 扩展：**
-
-- [ ] 支持 StatefulSets、DaemonSets、Jobs/CronJobs
-- [ ] Pod 详情面板 (资源用量、Events、Conditions)
+- [x] 支持 StatefulSets、DaemonSets、Jobs/CronJobs
+- [x] Pod 详情面板 (资源用量、Events、Conditions)
 
 **数据安全增强：**
-- [ ] 正则脱敏规则 — 自动遮盖日志中的 API Key、JWT、邮箱、IP 地址等敏感信息后再发送给 LLM
+- [x] 正则脱敏规则 — 自动遮盖日志中的 API Key、JWT、邮箱、IP 地址等敏感信息后再发送给 LLM
 
-### Phase 3: Cluster Management
+### Phase 3: DB Intelligence & Token Metrics (current)
+
+**数据库自然语言查询：**
+- [ ] AI 自动发现集群内 DB Pod (MySQL / PostgreSQL)
+- [ ] 凭据自动获取 (Secret / 环境变量 → Chat 交互兜底)
+- [ ] NL → Schema 自省 → SQL 生成 → 执行 (严格只读，仅 SELECT)
+- [ ] 多表关联发现 (外键 + AI 智能推断) + 自动跟进查询
+- [ ] SQL 安全双层检查 (关键词白名单 + AST 解析器校验)
+- [ ] Log Panel 双模式 (Log Viewer / Data Viewer 自动切换)
+- [ ] Data Viewer 表格渲染 + tab 切换 (鼠标 + 键盘)
+- [ ] 关联路径 FIFO 管理 (默认 10 路径，可配置，上限 100)
+- [ ] 实时 tab 追加 (每查出一个关联表立即发射到 Data Viewer)
+
+**Token 指标显示：**
+- [ ] Chat Panel header 常驻显示 iter / in / out / cache / ctx%
+- [ ] LLM adapter 提取 TokenUsage (各 Provider SDK response)
+- [ ] Agent 层 metrics 聚合 + 实时更新
+
+> **详细设计文档：** [Phase 3 PRD](./docs/superpowers/specs/2026-04-29-phase3-prd-design.md)
+
+### Phase 4: Cluster Management
 
 - [ ] AI 辅助 K8s 资源管理 (scale, rollout, restart) — 三次确认机制
 - [ ] 危险操作保护 (delete, drain) — 三次确认 + 输入资源名确认
@@ -867,13 +885,16 @@ AI Chat → Ask follow-up → AI remembers context → Refine query → Updated 
 - [ ] Resource YAML 查看/编辑
 - [ ] 事件 (Events) 浏览和分析
 
-### Phase 4: Advanced
+### Phase 5: Advanced
 
 - [ ] 多集群支持
 - [ ] Plugin 系统 (可扩展 tools)
 - [ ] MCP Server 模式 (供其他 AI 工具调用)
 - [ ] 团队协作 (共享查询、查询历史)
 - [ ] 外部日志源集成 (Loki, ElasticSearch, CloudWatch)
+- [ ] Ollama 本地模型支持 — 完全离线使用，日志数据不出本机
+- [ ] 日志可视化 (severity 分布柱状图、时间线热力图)
+- [ ] MongoDB / Redis 数据库支持
 
 ---
 
@@ -925,10 +946,11 @@ AI Chat → Ask follow-up → AI remembers context → Refine query → Updated 
 |---------|---------|---------|---------|
 | 日志查询类 (`kubectl logs`, `kubectl get`) | Safe | **直接执行**，无需确认 | Phase 1 |
 | 集群信息类 (`kubectl describe`, `kubectl top`) | Safe | **直接执行**，无需确认 | Phase 1 |
-| 集群管理类 (`kubectl scale`, `kubectl rollout`) | Dangerous | **三次确认才能执行** | Phase 3+ |
-| 危险操作 (`kubectl delete`, `kubectl drain`) | Critical | **三次确认 + 输入资源名确认** | Phase 3+ |
+| 数据库只读查询 (`SELECT`, `SHOW`, `DESCRIBE`) | Safe | **双层安全检查后直接执行** | Phase 3 |
+| 集群管理类 (`kubectl scale`, `kubectl rollout`) | Dangerous | **三次确认才能执行** | Phase 4+ |
+| 危险操作 (`kubectl delete`, `kubectl drain`) | Critical | **三次确认 + 输入资源名确认** | Phase 4+ |
 
-三次确认流程 (Phase 3+):
+三次确认流程 (Phase 4+):
 ```
 AI: 即将执行: kubectl scale deployment/order-service -n production --replicas=5
     [1/3] 确认执行此命令？(y/n): y
@@ -937,7 +959,7 @@ AI: 即将执行: kubectl scale deployment/order-service -n production --replica
     ✓ 执行中...
 ```
 
-V1 产品仅包含 Safe 级别命令，Dangerous/Critical 命令在 Phase 3 中实现。
+V1 产品仅包含 Safe 级别命令，Dangerous/Critical 命令在 Phase 4 中实现。
 
 ### 10.2 开发语言 — Go + Bubble Tea (已确认)
 

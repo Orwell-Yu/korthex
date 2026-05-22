@@ -336,6 +336,41 @@ func TestGemini_EmptyAPIKey(t *testing.T) {
 	assert.True(t, IsAuth(err))
 }
 
+func TestGemini_Chat_TokenUsage(t *testing.T) {
+	_, provider := newGeminiTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"candidates": []map[string]any{
+				{
+					"content": map[string]any{
+						"parts": []map[string]any{
+							{"text": "Hello from Gemini!"},
+						},
+						"role": "model",
+					},
+					"finishReason": "STOP",
+				},
+			},
+			"usageMetadata": map[string]any{
+				"promptTokenCount":        300,
+				"candidatesTokenCount":    75,
+				"cachedContentTokenCount": 200,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	msg, err := provider.Chat(context.Background(), []Message{
+		{Role: RoleUser, Content: "Hi"},
+	}, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, 300, msg.Usage.InputTokens)
+	assert.Equal(t, 75, msg.Usage.OutputTokens)
+	assert.Equal(t, 200, msg.Usage.CacheReadTokens)
+	assert.Equal(t, 0, msg.Usage.CacheWriteTokens)
+}
+
 func TestGemini_ConvertGeminiFunctionCall(t *testing.T) {
 	fc := &genai.FunctionCall{
 		Name: "test_func",

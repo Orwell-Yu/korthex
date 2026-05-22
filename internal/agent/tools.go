@@ -11,23 +11,34 @@ import (
 	"time"
 
 	"github.com/Orwell-Yu/korthex/internal/config"
+	"github.com/Orwell-Yu/korthex/internal/db"
 	"github.com/Orwell-Yu/korthex/internal/k8s"
 	"github.com/Orwell-Yu/korthex/internal/llm"
 	"github.com/Orwell-Yu/korthex/pkg/logparse"
+	"github.com/Orwell-Yu/korthex/pkg/redact"
 )
 
 // toolExecutor implements ToolExecutor, dispatching tool calls to k8s.Client methods.
 type toolExecutor struct {
-	k8sClient k8s.Client
-	logBuffer LogBufferReader
-	parser    logparse.Parser
+	k8sClient    k8s.Client
+	dbService    db.DatabaseService // Phase 3: database intelligence
+	logBuffer    LogBufferReader
+	parser       logparse.Parser
+	redactEngine *redact.Engine // optional; nil → no per-cell DB result redaction
 }
 
-// NewToolExecutor creates a ToolExecutor backed by the given k8s.Client.
-func NewToolExecutor(k8sClient k8s.Client) ToolExecutor {
+// NewToolExecutor creates a ToolExecutor backed by the given k8s.Client and optional db.DatabaseService.
+// redactEngine, when non-nil, is applied to each cell of query_database results so that
+// PII/secrets present in row data (e.g. emails in a users table, API keys in a config
+// table) are masked before they cross the LLM and UI boundaries — the agent-level
+// redaction pipeline only sees the serialized tool result string, but DB cells deserve
+// the same treatment whether or not the surrounding [query_result] envelope changes.
+func NewToolExecutor(k8sClient k8s.Client, dbService db.DatabaseService, redactEngine *redact.Engine) ToolExecutor {
 	return &toolExecutor{
-		k8sClient: k8sClient,
-		parser:    logparse.NewParser(),
+		k8sClient:    k8sClient,
+		dbService:    dbService,
+		parser:       logparse.NewParser(),
+		redactEngine: redactEngine,
 	}
 }
 
@@ -212,6 +223,52 @@ func (t *toolExecutor) ToolDefinitions() []llm.ToolDefinition {
 				{Name: "context", Type: "string", Description: "Context name to switch to.", Required: true},
 			},
 		},
+		// Phase 3: Database tools
+		{
+			Name:        "discover_databases",
+			Description: "Discover database Pods (MySQL/PostgreSQL) in a namespace by scanning images, ports, and labels.",
+			Parameters: []llm.ParameterDef{
+				{Name: "namespace", Type: "string", Description: "Kubernetes namespace to scan for database Pods", Required: true},
+			},
+		},
+		{
+			Name:        "get_db_credentials",
+			Description: "Obtain database credentials for a specific Pod by inspecting environment variables and Secrets.",
+			Parameters: []llm.ParameterDef{
+				{Name: "namespace", Type: "string", Description: "Kubernetes namespace", Required: true},
+				{Name: "podName", Type: "string", Description: "Database Pod name", Required: true},
+			},
+		},
+		{
+			Name:        "get_db_schema",
+			Description: "Introspect database schema (tables, columns, types, primary keys) and foreign key relationships.",
+			Parameters: []llm.ParameterDef{
+				{Name: "namespace", Type: "string", Description: "Kubernetes namespace", Required: true},
+				{Name: "podName", Type: "string", Description: "Database Pod name", Required: true},
+				{Name: "database", Type: "string", Description: "Database name", Required: true},
+			},
+		},
+		{
+			Name:        "query_database",
+			Description: "Execute a read-only SQL query against a database Pod. Only SELECT/SHOW/DESCRIBE/EXPLAIN statements are allowed.",
+			Parameters: []llm.ParameterDef{
+				{Name: "namespace", Type: "string", Description: "Kubernetes namespace", Required: true},
+				{Name: "podName", Type: "string", Description: "Database Pod name", Required: true},
+				{Name: "database", Type: "string", Description: "Database name", Required: true},
+				{Name: "sql", Type: "string", Description: "SQL query (SELECT only)", Required: true},
+				{Name: "limit", Type: "string", Description: "Maximum rows to return (default from config)", Required: false},
+			},
+		},
+		{
+			Name:        "get_foreign_keys",
+			Description: "Get foreign key relationships for a specific table, showing parent-child column mappings.",
+			Parameters: []llm.ParameterDef{
+				{Name: "namespace", Type: "string", Description: "Kubernetes namespace", Required: true},
+				{Name: "podName", Type: "string", Description: "Database Pod name", Required: true},
+				{Name: "database", Type: "string", Description: "Database name", Required: true},
+				{Name: "table", Type: "string", Description: "Table name", Required: true},
+			},
+		},
 	}
 }
 
@@ -264,6 +321,17 @@ func (t *toolExecutor) ExecuteTool(ctx context.Context, name string, args map[st
 		return t.listKubeconfigs()
 	case "switch_kubeconfig":
 		return t.switchKubeconfig(args)
+	// Phase 3: Database tools
+	case "discover_databases":
+		return t.discoverDatabases(ctx, args)
+	case "get_db_credentials":
+		return t.getDBCredentials(ctx, args)
+	case "get_db_schema":
+		return t.getDBSchema(ctx, args)
+	case "query_database":
+		return t.queryDatabase(ctx, args)
+	case "get_foreign_keys":
+		return t.getForeignKeys(ctx, args)
 	default:
 		return "", nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -385,6 +453,17 @@ func GenerateCommandDisplay(name string, args map[string]string) string {
 			cmd += " --kubeconfig=" + kc
 		}
 		return cmd
+	// Phase 3: Database tools
+	case "discover_databases":
+		return fmt.Sprintf("kubectl get pods -n %s --field-selector=status.phase=Running (DB discovery)", args["namespace"])
+	case "get_db_credentials":
+		return fmt.Sprintf("kubectl exec -n %s %s -- env | grep -i password", args["namespace"], args["podName"])
+	case "get_db_schema":
+		return fmt.Sprintf("kubectl exec -n %s %s -- mysql -e \"SELECT * FROM INFORMATION_SCHEMA.TABLES\"", args["namespace"], args["podName"])
+	case "query_database":
+		return fmt.Sprintf("kubectl exec -n %s %s -- mysql -e %q", args["namespace"], args["podName"], args["sql"])
+	case "get_foreign_keys":
+		return fmt.Sprintf("kubectl exec -n %s %s -- mysql -e \"SELECT ... FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE\"", args["namespace"], args["podName"])
 	default:
 		return name
 	}
@@ -1228,6 +1307,215 @@ func (t *toolExecutor) switchKubeconfig(args map[string]string) (string, []k8s.L
 	}
 
 	return fmt.Sprintf("Switching to context %q (kubeconfig: %s). The UI will perform the connection switch.", ctx, kubeconfig), nil, nil
+}
+
+// --- Phase 3: Database handlers ---
+
+func (t *toolExecutor) discoverDatabases(ctx context.Context, args map[string]string) (string, []k8s.LogLine, error) {
+	ns := args["namespace"]
+	if ns == "" {
+		return "", nil, fmt.Errorf("namespace is required")
+	}
+	if t.dbService == nil {
+		return "Database service not configured. Enable database.discovery.enabled in config.", nil, nil
+	}
+
+	infos, err := t.dbService.Discover(ctx, ns)
+	if err != nil {
+		return "", nil, fmt.Errorf("discover databases: %w", err)
+	}
+
+	if len(infos) == 0 {
+		return fmt.Sprintf("No database Pods found in namespace %q.", ns), nil, nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Found %d database Pod(s) in namespace %q:\n\n", len(infos), ns)
+	b.WriteString("POD\tTYPE\tPORT\tDATABASE\n")
+	for _, info := range infos {
+		dbName := info.Database
+		if dbName == "" {
+			dbName = "<auto-detect>"
+		}
+		fmt.Fprintf(&b, "%s\t%s\t%d\t%s\n", info.PodName, info.DBType, info.Port, dbName)
+	}
+	return b.String(), nil, nil
+}
+
+func (t *toolExecutor) getDBCredentials(ctx context.Context, args map[string]string) (string, []k8s.LogLine, error) {
+	ns := args["namespace"]
+	podName := args["podName"]
+	if ns == "" || podName == "" {
+		return "", nil, fmt.Errorf("namespace and podName are required")
+	}
+	if t.dbService == nil {
+		return "Database service not configured. Enable database.discovery.enabled in config.", nil, nil
+	}
+
+	creds, err := t.dbService.GetCredentials(ctx, ns, podName)
+	if err != nil {
+		return "", nil, fmt.Errorf("get credentials: %w", err)
+	}
+
+	return fmt.Sprintf("Credentials obtained for %s (user: %s)", podName, creds.Username), nil, nil
+}
+
+func (t *toolExecutor) getDBSchema(ctx context.Context, args map[string]string) (string, []k8s.LogLine, error) {
+	ns := args["namespace"]
+	podName := args["podName"]
+	database := args["database"]
+	if ns == "" || podName == "" || database == "" {
+		return "", nil, fmt.Errorf("namespace, podName, and database are required")
+	}
+	if t.dbService == nil {
+		return "Database service not configured. Enable database.discovery.enabled in config.", nil, nil
+	}
+
+	tables, fks, err := t.dbService.GetSchema(ctx, ns, podName, database)
+	if err != nil {
+		return "", nil, fmt.Errorf("get schema: %w", err)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Schema for database %q (%d tables):\n\n", database, len(tables))
+
+	for _, tbl := range tables {
+		fmt.Fprintf(&b, "## %s\n", tbl.Name)
+		b.WriteString("  COLUMN\tTYPE\tNULLABLE\tPK\tDEFAULT\n")
+		for _, col := range tbl.Columns {
+			nullable := "NO"
+			if col.IsNullable {
+				nullable = "YES"
+			}
+			pk := ""
+			if col.IsPrimary {
+				pk = "PK"
+			}
+			def := col.Default
+			if def == "" {
+				def = "-"
+			}
+			fmt.Fprintf(&b, "  %s\t%s\t%s\t%s\t%s\n", col.Name, col.DataType, nullable, pk, def)
+		}
+		b.WriteByte('\n')
+	}
+
+	if len(fks) > 0 {
+		b.WriteString("Foreign Keys:\n")
+		for _, fk := range fks {
+			fmt.Fprintf(&b, "  %s.%s → %s.%s\n", fk.ChildTable, fk.ChildColumn, fk.ParentTable, fk.ParentColumn)
+		}
+	}
+
+	return b.String(), nil, nil
+}
+
+func (t *toolExecutor) queryDatabase(ctx context.Context, args map[string]string) (string, []k8s.LogLine, error) {
+	ns := args["namespace"]
+	podName := args["podName"]
+	database := args["database"]
+	sql := args["sql"]
+	if ns == "" || podName == "" || database == "" || sql == "" {
+		return "", nil, fmt.Errorf("namespace, podName, database, and sql are required")
+	}
+	if t.dbService == nil {
+		return "Database service not configured. Enable database.discovery.enabled in config.", nil, nil
+	}
+
+	limit := 0 // 0 = use config default
+	if l := args["limit"]; l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	result, err := t.dbService.Query(ctx, ns, podName, database, sql, limit)
+	if err != nil {
+		return "", nil, fmt.Errorf("query database: %w", err)
+	}
+
+	// Apply per-cell redaction before serializing. The agent-level pipeline still
+	// runs the final JSON envelope through redact, but doing it here gives the UI
+	// (which parses the [query_result] block) the same masked view, and ensures
+	// that even cells whose surrounding JSON breaks pattern boundaries are scrubbed.
+	if t.redactEngine != nil {
+		for i, row := range result.Rows {
+			for j, cell := range row {
+				masked, _ := t.redactEngine.Redact([]byte(cell))
+				result.Rows[i][j] = string(masked)
+			}
+		}
+	}
+
+	// Build [query_result] JSON block for app.go Data Viewer interception
+	rowsJSON := "["
+	for i, row := range result.Rows {
+		if i > 0 {
+			rowsJSON += ","
+		}
+		rowsJSON += "["
+		for j, cell := range row {
+			if j > 0 {
+				rowsJSON += ","
+			}
+			rowsJSON += strconv.Quote(cell)
+		}
+		rowsJSON += "]"
+	}
+	rowsJSON += "]"
+
+	colsJSON := "["
+	for i, col := range result.Columns {
+		if i > 0 {
+			colsJSON += ","
+		}
+		colsJSON += strconv.Quote(col)
+	}
+	colsJSON += "]"
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "[query_result]\n")
+	fmt.Fprintf(&b, `{"columns":%s,"rows":%s,"row_count":%d,"truncated":%t,"database":%s,"namespace":%s,"pod_name":%s}`,
+		colsJSON, rowsJSON, result.RowCount, result.Truncated,
+		strconv.Quote(database), strconv.Quote(ns), strconv.Quote(podName))
+	fmt.Fprintf(&b, "\n[/query_result]\n\n")
+
+	if result.Truncated {
+		fmt.Fprintf(&b, "%d rows returned (truncated at limit).", result.RowCount)
+	} else {
+		fmt.Fprintf(&b, "%d rows returned.", result.RowCount)
+	}
+
+	return b.String(), nil, nil
+}
+
+func (t *toolExecutor) getForeignKeys(ctx context.Context, args map[string]string) (string, []k8s.LogLine, error) {
+	ns := args["namespace"]
+	podName := args["podName"]
+	database := args["database"]
+	table := args["table"]
+	if ns == "" || podName == "" || database == "" || table == "" {
+		return "", nil, fmt.Errorf("namespace, podName, database, and table are required")
+	}
+	if t.dbService == nil {
+		return "Database service not configured. Enable database.discovery.enabled in config.", nil, nil
+	}
+
+	fks, err := t.dbService.GetForeignKeys(ctx, ns, podName, database, table)
+	if err != nil {
+		return "", nil, fmt.Errorf("get foreign keys: %w", err)
+	}
+
+	if len(fks) == 0 {
+		return fmt.Sprintf("No foreign keys found for table %q in database %q.", table, database), nil, nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Foreign keys for table %q (%d):\n\n", table, len(fks))
+	for _, fk := range fks {
+		fmt.Fprintf(&b, "  %s.%s → %s.%s\n", fk.ChildTable, fk.ChildColumn, fk.ParentTable, fk.ParentColumn)
+	}
+	return b.String(), nil, nil
 }
 
 // --- Helpers ---

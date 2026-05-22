@@ -359,3 +359,85 @@ func TestOpenAI_EmptyAPIKey(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, IsAuth(err))
 }
+
+func TestOpenAI_Chat_TokenUsage(t *testing.T) {
+	_, cfg := newOpenAITestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"id":    "chatcmpl-test",
+			"model": "gpt-4",
+			"choices": []map[string]any{
+				{
+					"index":         0,
+					"finish_reason": "stop",
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": "Hello!",
+					},
+				},
+			},
+			"usage": map[string]any{
+				"prompt_tokens":     150,
+				"completion_tokens": 42,
+				"total_tokens":      192,
+				"prompt_tokens_details": map[string]any{
+					"cached_tokens": 100,
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	provider, err := NewOpenAIProvider(cfg)
+	require.NoError(t, err)
+
+	msg, err := provider.Chat(context.Background(), []Message{
+		{Role: RoleUser, Content: "Hi"},
+	}, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, 150, msg.Usage.InputTokens)
+	assert.Equal(t, 42, msg.Usage.OutputTokens)
+	assert.Equal(t, 100, msg.Usage.CacheReadTokens)
+	assert.Equal(t, 0, msg.Usage.CacheWriteTokens)
+}
+
+func TestOpenAI_ChatStream_TokenUsage(t *testing.T) {
+	_, cfg := newOpenAITestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+
+		chunks := []string{
+			`{"id":"chatcmpl-1","model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}`,
+			`{"id":"chatcmpl-1","model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":80,"completion_tokens":10,"total_tokens":90,"prompt_tokens_details":{"cached_tokens":50}}}`,
+		}
+
+		for _, chunk := range chunks {
+			w.Write([]byte("data: " + chunk + "\n\n"))
+		}
+		w.Write([]byte("data: [DONE]\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	})
+
+	provider, err := NewOpenAIProvider(cfg)
+	require.NoError(t, err)
+
+	ch := make(chan StreamDelta, 10)
+	err = provider.ChatStream(context.Background(), []Message{
+		{Role: RoleUser, Content: "Hi"},
+	}, nil, ch)
+	require.NoError(t, err)
+
+	var usage *TokenUsage
+	for d := range ch {
+		if d.Usage != nil {
+			usage = d.Usage
+		}
+	}
+
+	require.NotNil(t, usage)
+	assert.Equal(t, 80, usage.InputTokens)
+	assert.Equal(t, 10, usage.OutputTokens)
+	assert.Equal(t, 50, usage.CacheReadTokens)
+}

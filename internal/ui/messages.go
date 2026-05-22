@@ -69,10 +69,32 @@ type ErrorMsg struct {
 
 // --- Phase 2 messages ---
 
+// MetricsUpdateMsg carries updated token metrics for the Chat panel header.
+type MetricsUpdateMsg struct {
+	Metrics agent.AgentMetrics
+}
+
 // BookmarkMsg signals the AI wants to bookmark specific log lines.
 type BookmarkMsg struct {
 	LineIndices []int
 	Reason      string
+}
+
+// --- Phase 3 messages ---
+
+// DataResultMsg carries a parsed query_database result for the Data Viewer panel.
+// NOTE: Emitted by app.go when query_database tool returns. Consumed by Data Viewer (S5).
+type DataResultMsg struct {
+	TableName string // table name for tab label
+	JoinPath  string // relation breadcrumb, e.g. "orders -> order_items via order_id"
+	IsPrimary bool   // first query = pinned tab, not FIFO-evicted
+	Columns   []string
+	Rows      [][]string
+	RowCount  int
+	Truncated bool
+	Database  string
+	Namespace string
+	PodName   string
 }
 
 // resourceItemsLoadedMsg carries resource items loaded via the registry pattern.

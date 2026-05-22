@@ -80,7 +80,12 @@ func TestListPods(t *testing.T) {
 			Labels:            map[string]string{"app": "order"},
 			CreationTimestamp: metav1.NewTime(time.Now().Add(-1 * time.Hour)),
 		},
-		Spec: corev1.PodSpec{NodeName: "node-1"},
+		Spec: corev1.PodSpec{
+			NodeName: "node-1",
+			Containers: []corev1.Container{
+				{Name: "order", Image: "order-service:latest"},
+			},
+		},
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
 			ContainerStatuses: []corev1.ContainerStatus{
@@ -94,7 +99,12 @@ func TestListPods(t *testing.T) {
 			Labels:            map[string]string{"app": "order"},
 			CreationTimestamp: metav1.NewTime(time.Now().Add(-30 * time.Minute)),
 		},
-		Spec: corev1.PodSpec{NodeName: "node-2"},
+		Spec: corev1.PodSpec{
+			NodeName: "node-2",
+			Containers: []corev1.Container{
+				{Name: "order", Image: "order-service:latest"},
+			},
+		},
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
 			ContainerStatuses: []corev1.ContainerStatus{
@@ -317,7 +327,12 @@ func TestDescribePod(t *testing.T) {
 			Name: "order-abc", Namespace: "production",
 			Labels: map[string]string{"app": "order"},
 		},
-		Spec: corev1.PodSpec{NodeName: "node-1"},
+		Spec: corev1.PodSpec{
+			NodeName: "node-1",
+			Containers: []corev1.Container{
+				{Name: "order", Image: "order-service:latest"},
+			},
+		},
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
 			PodIP: "10.0.0.5",

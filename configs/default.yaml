@@ -17,6 +17,7 @@ llm:
 agent:
   max_iterations: -1               # agentic loop max iterations (-1 = unlimited)
   max_history_turns: 20            # conversation context retained turns
+  token_metrics: true              # show token usage metrics in Chat panel header
 
 ui:
   theme: dark                      # dark | light | dracula | nord

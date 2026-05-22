@@ -87,6 +87,17 @@ func (p *openaiProvider) Chat(ctx context.Context, messages []Message, tools []T
 		Content: choice.Message.Content,
 	}
 
+	// Extract token usage
+	if resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 {
+		msg.Usage = TokenUsage{
+			InputTokens:  int(resp.Usage.PromptTokens),
+			OutputTokens: int(resp.Usage.CompletionTokens),
+		}
+		if resp.Usage.PromptTokensDetails.CachedTokens > 0 {
+			msg.Usage.CacheReadTokens = int(resp.Usage.PromptTokensDetails.CachedTokens)
+		}
+	}
+
 	for _, tc := range choice.Message.ToolCalls {
 		toolCall, err := parseOpenAIToolCall(tc)
 		if err != nil {
@@ -103,6 +114,10 @@ func (p *openaiProvider) ChatStream(ctx context.Context, messages []Message, too
 	defer close(ch)
 
 	params := p.buildParams(messages, tools)
+	// Request usage in streaming mode
+	params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
+		IncludeUsage: openai.Bool(true),
+	}
 
 	slog.Debug("llm stream request", "provider", p.providerName, "model", p.model, "tools", len(tools))
 
@@ -115,6 +130,17 @@ func (p *openaiProvider) ChatStream(ctx context.Context, messages []Message, too
 		acc.AddChunk(chunk)
 
 		if len(chunk.Choices) == 0 {
+			// Final chunk may have usage without choices
+			if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
+				usage := TokenUsage{
+					InputTokens:  int(chunk.Usage.PromptTokens),
+					OutputTokens: int(chunk.Usage.CompletionTokens),
+				}
+				if chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
+					usage.CacheReadTokens = int(chunk.Usage.PromptTokensDetails.CachedTokens)
+				}
+				ch <- StreamDelta{Usage: &usage}
+			}
 			continue
 		}
 
@@ -136,6 +162,17 @@ func (p *openaiProvider) ChatStream(ctx context.Context, messages []Message, too
 		if finishReason != "" {
 			sd.Done = true
 			sd.StopReason = finishReason
+			// Attach usage from the chunk that contains the finish reason
+			if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
+				usage := TokenUsage{
+					InputTokens:  int(chunk.Usage.PromptTokens),
+					OutputTokens: int(chunk.Usage.CompletionTokens),
+				}
+				if chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
+					usage.CacheReadTokens = int(chunk.Usage.PromptTokensDetails.CachedTokens)
+				}
+				sd.Usage = &usage
+			}
 		}
 
 		ch <- sd

@@ -72,10 +72,14 @@ type ChatModel struct {
 	maxTurns       int
 	collapsedTurns int
 	nextMsgID      int // monotonic counter for stable message IDs
+
+	// Token metrics (Phase 3)
+	metrics      agent.AgentMetrics
+	tokenMetrics bool // config: whether to show metrics in header
 }
 
 // NewChatModel creates a chat panel.
-func NewChatModel(a agent.Agent, maxTurns int, theme Theme) ChatModel {
+func NewChatModel(a agent.Agent, maxTurns int, theme Theme, tokenMetrics bool) ChatModel {
 	if maxTurns <= 0 {
 		maxTurns = 20
 	}
@@ -89,14 +93,15 @@ func NewChatModel(a agent.Agent, maxTurns int, theme Theme) ChatModel {
 	ti.CharLimit = 1024
 	ti.Focus()
 	return ChatModel{
-		agent:      a,
-		theme:      theme,
-		input:      ti,
-		maxTurns:   maxTurns,
-		spinner:    s,
-		historyIdx: -1,
-		autoScroll: true,
-		mdRenderer: NewMarkdownRenderer(theme.Name, 80),
+		agent:        a,
+		theme:        theme,
+		input:        ti,
+		maxTurns:     maxTurns,
+		spinner:      s,
+		historyIdx:   -1,
+		autoScroll:   true,
+		mdRenderer:   NewMarkdownRenderer(theme.Name, 80),
+		tokenMetrics: tokenMetrics,
 	}
 }
 
@@ -118,6 +123,10 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 	case AgentEventMsg:
 		return m.handleAgentEvent(agent.AgentEvent(msg))
+
+	case MetricsUpdateMsg:
+		m.metrics = msg.Metrics
+		return m, nil
 
 	case agentStartedMsg:
 		m.isRunning = true
@@ -544,13 +553,35 @@ func (m ChatModel) View() string {
 	if m.isRunning {
 		b.WriteString(" " + m.spinner.View() + " " + m.theme.Subtitle.Render("running"))
 	}
+
+	// Token metrics in header (when enabled and non-zero)
+	metricsStr := ""
+	if m.tokenMetrics && m.metrics.Iterations > 0 {
+		// Calculate available width for metrics
+		headerUsed := lipgloss.Width(m.theme.Title.Render("AI Assistant"))
+		if m.isRunning {
+			headerUsed += lipgloss.Width(" "+m.spinner.View()+" "+m.theme.Subtitle.Render("running")) + 1
+		}
+		if !m.autoScroll {
+			headerUsed += lipgloss.Width(m.theme.StatusBarKey.Render("SCROLLED")) + 1
+		}
+		available := max(m.width-headerUsed-3, 0) // 3 for " ─ " separator + margin
+		metricsStr = m.metrics.FormatHeaderProgressive(available)
+		if metricsStr != "" {
+			b.WriteString(" " + m.theme.Subtitle.Render("─ "+metricsStr))
+		}
+	}
+
 	if !m.autoScroll {
 		scrollHint := m.theme.StatusBarKey.Render("SCROLLED")
-		pad := max(m.width-lipgloss.Width(m.theme.Title.Render("AI Assistant"))-lipgloss.Width(scrollHint), 1)
+		headerUsed := lipgloss.Width(m.theme.Title.Render("AI Assistant"))
 		if m.isRunning {
-			pad -= lipgloss.Width(m.spinner.View()+" "+m.theme.Subtitle.Render("running")) + 1
-			pad = max(pad, 1)
+			headerUsed += lipgloss.Width(" "+m.spinner.View()+" "+m.theme.Subtitle.Render("running")) + 1
 		}
+		if metricsStr != "" {
+			headerUsed += lipgloss.Width(" "+m.theme.Subtitle.Render("─ "+metricsStr)) + 1
+		}
+		pad := max(m.width-headerUsed-lipgloss.Width(scrollHint), 1)
 		b.WriteString(strings.Repeat(" ", pad) + scrollHint)
 	}
 	b.WriteString("\n")

@@ -29,13 +29,37 @@ type Pod struct {
 	Containers []Container
 	Labels     map[string]string
 	NodeName   string
+	OwnerKind  string // Deployment, StatefulSet, DaemonSet, etc.
+	OwnerName  string // name of the owning resource
 }
 
 // Container represents a container within a pod.
 type Container struct {
 	Name  string
+	Image string // container image (e.g. "mysql:8.0")
 	Ready bool
 	State string // running, waiting, terminated
+	Ports []ContainerPort
+}
+
+// ContainerPort represents a port exposed by a container.
+type ContainerPort struct {
+	ContainerPort int32
+	Protocol      string // TCP, UDP
+}
+
+// EnvVar represents a single environment variable in a container.
+type EnvVar struct {
+	Name  string
+	Value string // direct value (empty if from secret)
+	// SecretKeyRef fields (non-empty if sourced from a Secret)
+	SecretName string
+	SecretKey  string
+}
+
+// EnvFromSource represents an envFrom entry (e.g. secretRef).
+type EnvFromSource struct {
+	SecretName string
 }
 
 // Event represents a K8s event.

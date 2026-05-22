@@ -2,6 +2,46 @@ package k8s
 
 import "context"
 
+// MockPodExecutor is a test double for the PodExecutor interface.
+type MockPodExecutor struct {
+	ExecInPodFunc func(ctx context.Context, namespace, podName, container string, command []string) ([]byte, []byte, error)
+}
+
+func (m *MockPodExecutor) ExecInPod(ctx context.Context, namespace, podName, container string, command []string) ([]byte, []byte, error) {
+	if m.ExecInPodFunc != nil {
+		return m.ExecInPodFunc(ctx, namespace, podName, container, command)
+	}
+	return nil, nil, nil
+}
+
+// MockPodInspector is a test double for the PodInspector interface.
+type MockPodInspector struct {
+	GetPodContainerEnvsFunc  func(namespace, podName string) (map[string][]EnvVar, error)
+	GetPodEnvFromSecretsFunc func(namespace, podName string) (map[string][]EnvFromSource, error)
+	GetSecretDataFunc        func(ctx context.Context, namespace, secretName string) (map[string]string, error)
+}
+
+func (m *MockPodInspector) GetPodContainerEnvs(namespace, podName string) (map[string][]EnvVar, error) {
+	if m.GetPodContainerEnvsFunc != nil {
+		return m.GetPodContainerEnvsFunc(namespace, podName)
+	}
+	return nil, nil
+}
+
+func (m *MockPodInspector) GetPodEnvFromSecrets(namespace, podName string) (map[string][]EnvFromSource, error) {
+	if m.GetPodEnvFromSecretsFunc != nil {
+		return m.GetPodEnvFromSecretsFunc(namespace, podName)
+	}
+	return nil, nil
+}
+
+func (m *MockPodInspector) GetSecretData(ctx context.Context, namespace, secretName string) (map[string]string, error) {
+	if m.GetSecretDataFunc != nil {
+		return m.GetSecretDataFunc(ctx, namespace, secretName)
+	}
+	return nil, nil
+}
+
 // MockResourceLister is a test double for the ResourceLister interface.
 type MockResourceLister struct {
 	ListNamespacesFunc       func() ([]Namespace, error)

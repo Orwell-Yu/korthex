@@ -79,6 +79,14 @@ func (p *anthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 		Role: RoleAssistant,
 	}
 
+	// Extract token usage
+	msg.Usage = TokenUsage{
+		InputTokens:      int(resp.Usage.InputTokens),
+		OutputTokens:     int(resp.Usage.OutputTokens),
+		CacheReadTokens:  int(resp.Usage.CacheReadInputTokens),
+		CacheWriteTokens: int(resp.Usage.CacheCreationInputTokens),
+	}
+
 	for _, block := range resp.Content {
 		switch block.Type {
 		case "text":
@@ -148,9 +156,16 @@ func (p *anthropicProvider) ChatStream(ctx context.Context, messages []Message, 
 
 		case "message_delta":
 			msgDelta := event.AsMessageDelta()
+			usage := &TokenUsage{
+				InputTokens:      int(msgDelta.Usage.InputTokens),
+				OutputTokens:     int(msgDelta.Usage.OutputTokens),
+				CacheReadTokens:  int(msgDelta.Usage.CacheReadInputTokens),
+				CacheWriteTokens: int(msgDelta.Usage.CacheCreationInputTokens),
+			}
 			ch <- StreamDelta{
 				Done:       true,
 				StopReason: string(msgDelta.Delta.StopReason),
+				Usage:      usage,
 			}
 		}
 	}

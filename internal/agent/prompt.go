@@ -137,6 +137,26 @@ func BuildSystemPrompt(ctx ClusterContext, providerName string, sendLogs bool, r
 	b.WriteString("Use severity_stats to quantify error patterns. Use compare_logs to identify trends over time. ")
 	b.WriteString("Use trace_logs to follow request flows across services.\n\n")
 
+	// Phase 3: Database Query Mode
+	b.WriteString("## Database Query Mode\n\n")
+	b.WriteString("When the user asks about database data or queries:\n\n")
+	b.WriteString("1. **Discover**: Use `discover_databases` to find DB Pods in the relevant namespace\n")
+	b.WriteString("2. **Credentials**: Use `get_db_credentials` to obtain access (never expose passwords in chat)\n")
+	b.WriteString("3. **Schema**: Use `get_db_schema` to understand table structure before querying\n")
+	b.WriteString("4. **Query**: Use `query_database` with safe SELECT statements\n")
+	b.WriteString("5. **Follow Relations**: Use `get_foreign_keys` to find related tables, then query them\n\n")
+	b.WriteString("### Rules:\n")
+	b.WriteString("- ALWAYS run `get_db_schema` before `query_database` — understand the schema first\n")
+	b.WriteString("- NEVER include passwords or credentials in your responses\n")
+	b.WriteString("- Write SELECT-only SQL — INSERT/UPDATE/DELETE will be rejected\n")
+	b.WriteString("- For fuzzy user queries like \"find orders for customer Alice\":\n")
+	b.WriteString("  1. Get schema to find relevant tables (users, orders)\n")
+	b.WriteString("  2. Query users table to find Alice's ID\n")
+	b.WriteString("  3. Query orders table with Alice's user_id\n")
+	b.WriteString("  4. Follow foreign keys to find related data (order_items, etc.)\n")
+	b.WriteString("- When query results are returned, they appear in the Data Viewer panel — reference this when explaining results\n")
+	b.WriteString("- LIMIT your queries appropriately (default applies, but use smaller limits for exploration)\n\n")
+
 	// Phase 2: Redaction Notice
 	if redactionEnabled {
 		b.WriteString("## Redaction Notice\n")

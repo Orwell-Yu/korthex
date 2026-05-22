@@ -76,7 +76,7 @@ func collectEvents(t *testing.T, agent Agent, query string) []AgentEvent {
 
 func newTestAgent(provider llm.Provider, k8sClient k8s.Client, sendLogs bool) Agent {
 	cfg := config.AgentConfig{MaxIterations: 3, MaxHistoryTurns: 10}
-	return New(provider, k8sClient, logparse.NewParser(), cfg, sendLogs, nil, nil, "")
+	return New(provider, k8sClient, logparse.NewParser(), cfg, sendLogs, nil, nil, "", nil)
 }
 
 // --- Test Cases ---
@@ -366,6 +366,16 @@ func TestSafetyChecker_AllowsAllReadOnlyTools(t *testing.T) {
 		"bookmark_log_lines",
 		"list_kubeconfigs",
 		"switch_kubeconfig",
+		// Phase 3: Database tools
+		"discover_databases",
+		"get_db_credentials",
+		"get_db_schema",
+		"query_database",
+		"get_foreign_keys",
+	}
+
+	if len(tools) != 26 {
+		t.Fatalf("expected 26 whitelisted tools, got %d", len(tools))
 	}
 
 	for _, tool := range tools {
@@ -576,7 +586,7 @@ func TestExecute_LLMRetry_RateLimit(t *testing.T) {
 	}
 
 	cfg := config.AgentConfig{MaxIterations: 3, MaxHistoryTurns: 10}
-	agent := New(provider, mockK8s, logparse.NewParser(), cfg, true, nil, nil, "")
+	agent := New(provider, mockK8s, logparse.NewParser(), cfg, true, nil, nil, "", nil)
 
 	events := collectEvents(t, agent, "hello")
 
@@ -601,7 +611,7 @@ func TestExecute_LLMError_AuthNoRetry(t *testing.T) {
 	}
 
 	cfg := config.AgentConfig{MaxIterations: 3, MaxHistoryTurns: 10}
-	agent := New(provider, mockK8s, logparse.NewParser(), cfg, true, nil, nil, "")
+	agent := New(provider, mockK8s, logparse.NewParser(), cfg, true, nil, nil, "", nil)
 
 	events := collectEvents(t, agent, "hello")
 
@@ -725,3 +735,105 @@ type mockLogBufferForAgent struct {
 
 func (m *mockLogBufferForAgent) Slice() []logparse.LogEntry { return m.entries }
 func (m *mockLogBufferForAgent) Len() int                   { return len(m.entries) }
+
+func TestAgent_EventMetricsUpdate_EmittedAfterLLMCall(t *testing.T) {
+	mock := &mockProvider{
+		chatResponses: []*llm.Message{
+			{
+				Role:    llm.RoleAssistant,
+				Content: "Hello!",
+				Usage: llm.TokenUsage{
+					InputTokens:  500,
+					OutputTokens: 100,
+				},
+			},
+		},
+	}
+
+	a := newTestAgent(mock, nil, true)
+	events := collectEvents(t, a, "hello")
+
+	var metricsEvents []AgentEvent
+	for _, evt := range events {
+		if evt.Type == EventMetricsUpdate {
+			metricsEvents = append(metricsEvents, evt)
+		}
+	}
+
+	if len(metricsEvents) == 0 {
+		t.Fatal("expected at least one EventMetricsUpdate event")
+	}
+
+	m := metricsEvents[0].Metrics
+	if m.Iterations != 1 {
+		t.Errorf("expected 1 iteration, got %d", m.Iterations)
+	}
+	if m.TotalInput != 500 {
+		t.Errorf("expected TotalInput=500, got %d", m.TotalInput)
+	}
+	if m.TotalOutput != 100 {
+		t.Errorf("expected TotalOutput=100, got %d", m.TotalOutput)
+	}
+}
+
+func TestAgent_EventMetricsUpdate_MultipleIterations(t *testing.T) {
+	mockK8s := &k8s.MockClient{
+		MockResources: &k8s.MockResourceLister{
+			ListNamespacesFunc: func() ([]k8s.Namespace, error) {
+				return []k8s.Namespace{
+					{Name: "default", Status: "Active"},
+				}, nil
+			},
+		},
+	}
+
+	mock := &mockProvider{
+		chatResponses: []*llm.Message{
+			{
+				Role: llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "kubectl_get_namespaces"},
+				},
+				Usage: llm.TokenUsage{
+					InputTokens:  300,
+					OutputTokens: 50,
+				},
+			},
+			{
+				Role:    llm.RoleAssistant,
+				Content: "Found namespaces.",
+				Usage: llm.TokenUsage{
+					InputTokens:     800,
+					OutputTokens:    150,
+					CacheReadTokens: 200,
+				},
+			},
+		},
+	}
+
+	a := newTestAgent(mock, mockK8s, true)
+	events := collectEvents(t, a, "list namespaces")
+
+	var metricsEvents []AgentEvent
+	for _, evt := range events {
+		if evt.Type == EventMetricsUpdate {
+			metricsEvents = append(metricsEvents, evt)
+		}
+	}
+
+	if len(metricsEvents) != 2 {
+		t.Fatalf("expected 2 EventMetricsUpdate events, got %d", len(metricsEvents))
+	}
+
+	// First iteration
+	m1 := metricsEvents[0].Metrics
+	if m1.Iterations != 1 || m1.TotalInput != 300 || m1.TotalOutput != 50 {
+		t.Errorf("iter1 metrics mismatch: %+v", m1)
+	}
+
+	// Second iteration (accumulated)
+	m2 := metricsEvents[1].Metrics
+	if m2.Iterations != 2 || m2.TotalInput != 1100 || m2.TotalOutput != 200 || m2.TotalCache != 200 {
+		t.Errorf("iter2 metrics mismatch: %+v", m2)
+	}
+}

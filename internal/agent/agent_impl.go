@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Orwell-Yu/korthex/internal/config"
+	"github.com/Orwell-Yu/korthex/internal/db"
 	"github.com/Orwell-Yu/korthex/internal/history"
 	"github.com/Orwell-Yu/korthex/internal/k8s"
 	"github.com/Orwell-Yu/korthex/internal/llm"
@@ -23,6 +24,7 @@ type agentImpl struct {
 	safety   SafetyChecker
 	history  *HistoryManager
 	parser   logparse.Parser
+	metrics  AgentMetrics
 
 	// Phase 2: redaction and persistence
 	redactEngine     *redact.Engine
@@ -36,7 +38,7 @@ type agentImpl struct {
 }
 
 // New creates an Agent with the given dependencies.
-func New(provider llm.Provider, k8sClient k8s.Client, parser logparse.Parser, cfg config.AgentConfig, sendLogs bool, redactEngine *redact.Engine, historyStore history.Store, sessionID string) Agent {
+func New(provider llm.Provider, k8sClient k8s.Client, parser logparse.Parser, cfg config.AgentConfig, sendLogs bool, redactEngine *redact.Engine, historyStore history.Store, sessionID string, dbService db.DatabaseService) Agent {
 	maxIter := cfg.MaxIterations
 	// -1 means unlimited; 0 or unset also treated as unlimited
 	if maxIter == 0 {
@@ -51,7 +53,7 @@ func New(provider llm.Provider, k8sClient k8s.Client, parser logparse.Parser, cf
 
 	a := &agentImpl{
 		provider:         provider,
-		tools:            NewToolExecutor(k8sClient),
+		tools:            NewToolExecutor(k8sClient, dbService, redactEngine),
 		safety:           NewSafetyChecker(),
 		parser:           parser,
 		maxIterations:    maxIter,
@@ -60,6 +62,7 @@ func New(provider llm.Provider, k8sClient k8s.Client, parser logparse.Parser, cf
 		historyStore:     historyStore,
 		sessionID:        sessionID,
 		redactionEnabled: redactionEnabled,
+		metrics:          AgentMetrics{MaxContext: LookupContextSize(provider.ModelName())},
 	}
 
 	systemPrompt := BuildSystemPrompt(a.clusterCtx, provider.ProviderName(), sendLogs, redactionEnabled)
@@ -89,6 +92,7 @@ func (a *agentImpl) ClearHistory() {
 
 // Execute runs the agentic loop: user query → LLM → tool calls → iterate.
 func (a *agentImpl) Execute(ctx context.Context, userQuery string, ch chan<- AgentEvent) error {
+	a.metrics.Reset()
 	a.history.AppendUserMessage(userQuery)
 	a.persistMessage(ctx, "user", userQuery)
 
@@ -107,6 +111,11 @@ func (a *agentImpl) Execute(ctx context.Context, userQuery string, ch chan<- Age
 			ch <- AgentEvent{Type: EventComplete, Iteration: iteration, MaxIter: a.maxIterations}
 			return err
 		}
+
+		// Update metrics after each LLM call
+		a.metrics.Iterations++
+		a.metrics.Add(response.Usage)
+		ch <- AgentEvent{Type: EventMetricsUpdate, Metrics: a.metrics}
 
 		// No tool calls → LLM finished reasoning
 		if len(response.ToolCalls) == 0 {

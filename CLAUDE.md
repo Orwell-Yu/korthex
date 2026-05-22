@@ -156,9 +156,10 @@ Korthex Binary
 | Phase | Focus | Key Deliverables |
 |-------|-------|-----------------|
 | **Phase 1** (done) | Log Intelligence | TUI + AI Chat + Log Viewer + Multi-provider LLM |
-| **Phase 2** (current) | Deep Analysis | 日志分析增强, 对话持久化, 脱敏规则, 资源类型扩展, Markdown 渲染 |
-| Phase 3 | Cluster Management | AI 辅助写操作 (scale/restart/delete), 三次确认 |
-| Phase 4 | Advanced | 多集群, Plugin 系统, MCP Server, 外部日志源 |
+| **Phase 2** (done) | Deep Analysis | 日志分析增强, 对话持久化, 脱敏规则, 资源类型扩展, Markdown 渲染 |
+| **Phase 3** (current) | DB Intelligence | 数据库自然语言查询 (MySQL/PG), Token 指标显示 |
+| Phase 4 | Cluster Management | AI 辅助写操作 (scale/restart/delete), 三次确认 |
+| Phase 5 | Advanced | 多集群, Plugin 系统, MCP Server, 外部日志源, Ollama, 日志可视化 |
 
 ## Phase 1 Implementation Status
 

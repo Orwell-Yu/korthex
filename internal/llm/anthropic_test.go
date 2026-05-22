@@ -402,3 +402,89 @@ func TestAnthropic_EmptyAPIKey(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, IsAuth(err))
 }
+
+func TestAnthropic_Chat_TokenUsage(t *testing.T) {
+	_, cfg := newAnthropicTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"id":    "msg_test",
+			"type":  "message",
+			"role":  "assistant",
+			"model": "claude-sonnet-4-20250514",
+			"content": []map[string]any{
+				{"type": "text", "text": "Hello!"},
+			},
+			"stop_reason": "end_turn",
+			"usage": map[string]any{
+				"input_tokens":                200,
+				"output_tokens":               50,
+				"cache_read_input_tokens":      120,
+				"cache_creation_input_tokens":  80,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	provider, err := NewAnthropicProvider(cfg)
+	require.NoError(t, err)
+
+	msg, err := provider.Chat(context.Background(), []Message{
+		{Role: RoleUser, Content: "Hi"},
+	}, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, 200, msg.Usage.InputTokens)
+	assert.Equal(t, 50, msg.Usage.OutputTokens)
+	assert.Equal(t, 120, msg.Usage.CacheReadTokens)
+	assert.Equal(t, 80, msg.Usage.CacheWriteTokens)
+}
+
+func TestAnthropic_ChatStream_TokenUsage(t *testing.T) {
+	_, cfg := newAnthropicTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+
+		events := []string{
+			`event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":null,"usage":{"input_tokens":100,"output_tokens":0}}}`,
+			`event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			`event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}`,
+			`event: content_block_stop
+data: {"type":"content_block_stop","index":0}`,
+			`event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":60,"cache_creation_input_tokens":40}}`,
+			`event: message_stop
+data: {"type":"message_stop"}`,
+		}
+
+		for _, event := range events {
+			w.Write([]byte(event + "\n\n"))
+		}
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	})
+
+	provider, err := NewAnthropicProvider(cfg)
+	require.NoError(t, err)
+
+	ch := make(chan StreamDelta, 10)
+	err = provider.ChatStream(context.Background(), []Message{
+		{Role: RoleUser, Content: "Hi"},
+	}, nil, ch)
+	require.NoError(t, err)
+
+	var usage *TokenUsage
+	for d := range ch {
+		if d.Usage != nil {
+			usage = d.Usage
+		}
+	}
+
+	require.NotNil(t, usage)
+	assert.Equal(t, 100, usage.InputTokens)
+	assert.Equal(t, 10, usage.OutputTokens)
+	assert.Equal(t, 60, usage.CacheReadTokens)
+	assert.Equal(t, 40, usage.CacheWriteTokens)
+}

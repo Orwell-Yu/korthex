@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,7 +72,7 @@ func NewAppModel(a agent.Agent, k k8s.Client, cfg *config.Config, historyStore h
 		logviewer: NewLogViewerModel(logBuffer, k, logViewerConfig{
 			PageSize: pageSize,
 		}, theme),
-		chat:          NewChatModel(a, maxTurns, theme),
+		chat:          NewChatModel(a, maxTurns, theme, cfg.Agent.TokenMetrics),
 		statusbar:     NewStatusBarModel(theme),
 		help:          NewHelpModel(theme),
 		podDetail:     NewPodDetailModel(k, theme),
@@ -318,6 +319,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, logCmd)
 			}
 		}
+		// If query_database tool result, parse and emit DataResultMsg for Data Viewer.
+		// TODO(P3-S5): DataResultMsg is emitted here but not yet consumed — the Data Viewer
+		// panel that handles this message will be added in S5 (Data Viewer session).
+		if msg.Type == agent.EventToolResult && msg.ToolName == "query_database" {
+			if dataMsg, ok := parseQueryResult(msg.ToolResult); ok {
+				cmds = append(cmds, func() tea.Msg { return dataMsg })
+			}
+		}
 		// If navigate_resource_browser tool call, sync Resource Browser
 		if msg.Type == agent.EventToolCall && msg.ToolName == "navigate_resource_browser" {
 			if navMsg, ok := parseNavigateToolArgs(msg.ToolArgs); ok {
@@ -349,6 +358,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					FromAgent:  true,
 				}
 			})
+		}
+		// If metrics update, send to chat
+		if msg.Type == agent.EventMetricsUpdate {
+			var metricsCmd tea.Cmd
+			m.chat, metricsCmd = m.chat.Update(MetricsUpdateMsg{Metrics: msg.Metrics})
+			if metricsCmd != nil {
+				cmds = append(cmds, metricsCmd)
+			}
 		}
 		return m, tea.Batch(cmds...)
 
@@ -808,6 +825,44 @@ func parseNavigateToolArgs(args map[string]string) (NavigateToResourceMsg, bool)
 		Level:     level,
 		Namespace: args["namespace"],
 		Name:      name,
+	}, true
+}
+
+// parseQueryResult extracts the [query_result]...[/query_result] JSON block
+// from a query_database tool result and returns a DataResultMsg.
+func parseQueryResult(toolResult string) (DataResultMsg, bool) {
+	const startTag = "[query_result]\n"
+	const endTag = "\n[/query_result]"
+	si := strings.Index(toolResult, startTag)
+	if si < 0 {
+		return DataResultMsg{}, false
+	}
+	si += len(startTag)
+	ei := strings.Index(toolResult[si:], endTag)
+	if ei < 0 {
+		return DataResultMsg{}, false
+	}
+	raw := toolResult[si : si+ei]
+	var parsed struct {
+		Columns   []string   `json:"columns"`
+		Rows      [][]string `json:"rows"`
+		RowCount  int        `json:"row_count"`
+		Truncated bool       `json:"truncated"`
+		Database  string     `json:"database"`
+		Namespace string     `json:"namespace"`
+		PodName   string     `json:"pod_name"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return DataResultMsg{}, false
+	}
+	return DataResultMsg{
+		Columns:   parsed.Columns,
+		Rows:      parsed.Rows,
+		RowCount:  parsed.RowCount,
+		Truncated: parsed.Truncated,
+		Database:  parsed.Database,
+		Namespace: parsed.Namespace,
+		PodName:   parsed.PodName,
 	}, true
 }
 
