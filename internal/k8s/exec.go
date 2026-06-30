@@ -16,6 +16,14 @@ var _ PodExecutor = (*k8sClient)(nil)
 // ExecInPod executes a command inside a pod container via SPDY.
 // If container is empty, K8s defaults to the first container.
 func (c *k8sClient) ExecInPod(ctx context.Context, namespace, podName, container string, command []string) ([]byte, []byte, error) {
+	return c.ExecInPodWithStdin(ctx, namespace, podName, container, command, nil)
+}
+
+// ExecInPodWithStdin is like ExecInPod but pipes stdin into the command. Used to
+// pass secrets (e.g. a DB password) to the in-pod process WITHOUT placing them in
+// the command argv — argv is visible in API Server audit logs and `ps` output,
+// stdin is not.
+func (c *k8sClient) ExecInPodWithStdin(ctx context.Context, namespace, podName, container string, command []string, stdin []byte) ([]byte, []byte, error) {
 	c.mu.RLock()
 	clientset := c.clientset
 	restConfig := c.restConfig
@@ -25,6 +33,8 @@ func (c *k8sClient) ExecInPod(ctx context.Context, namespace, podName, container
 		return nil, nil, fmt.Errorf("exec: not connected")
 	}
 
+	useStdin := len(stdin) > 0
+
 	req := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
@@ -33,7 +43,7 @@ func (c *k8sClient) ExecInPod(ctx context.Context, namespace, podName, container
 		VersionedParams(&corev1.PodExecOptions{
 			Container: container,
 			Command:   command,
-			Stdin:     false,
+			Stdin:     useStdin,
 			Stdout:    true,
 			Stderr:    true,
 		}, scheme.ParameterCodec)
@@ -44,10 +54,15 @@ func (c *k8sClient) ExecInPod(ctx context.Context, namespace, podName, container
 	}
 
 	var stdout, stderr bytes.Buffer
-	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+	streamOpts := remotecommand.StreamOptions{
 		Stdout: &stdout,
 		Stderr: &stderr,
-	})
+	}
+	if useStdin {
+		streamOpts.Stdin = bytes.NewReader(stdin)
+	}
+
+	err = exec.StreamWithContext(ctx, streamOpts)
 	if err != nil {
 		return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("exec in pod %s/%s: %w", namespace, podName, err)
 	}

@@ -203,6 +203,24 @@ func TestParseDatabaseURL(t *testing.T) {
 			"redis://host:6379",
 			nil,
 		},
+		{
+			// SQLAlchemy-style driver suffix must be stripped (this was the bug:
+			// the old prefix match did not recognize postgresql+asyncpg://).
+			"postgres with +asyncpg driver",
+			"postgresql+asyncpg://biz:pw@pgm-x.pg.rds.aliyuncs.com:6432/cn_dev_biz",
+			&Credentials{Username: "biz", Password: "pw", Host: "pgm-x.pg.rds.aliyuncs.com", Port: 6432, Database: "cn_dev_biz"},
+		},
+		{
+			"mysql with +aiomysql driver",
+			"mysql+aiomysql://u:pw@rm-x.rds.aliyuncs.com:3306/users",
+			&Credentials{Username: "u", Password: "pw", Host: "rm-x.rds.aliyuncs.com", Port: 3306, Database: "users"},
+		},
+		{
+			// URL-encoded password (%40 = @) must be decoded.
+			"url-encoded password",
+			"postgresql://u:p%40ss%21@h:5432/db",
+			&Credentials{Username: "u", Password: "p@ss!", Host: "h", Port: 5432, Database: "db"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -260,4 +278,26 @@ func TestExtractCreds_MySQLRootPasswordDefaultsToRoot(t *testing.T) {
 	require.NotNil(t, creds)
 	assert.Equal(t, "root", creds.Username)
 	assert.Equal(t, "rootpass", creds.Password)
+}
+
+// TestGetCredentialsFromConnString_SecretKeyRef — the conn-string env var is
+// sourced from a secretKeyRef (empty Value in PodSpec); the value must be read
+// from the Secret so get_db_schema/query_database can resolve metadata.
+func TestGetCredentialsFromConnString_SecretKeyRef(t *testing.T) {
+	inspector := &k8s.MockPodInspector{
+		GetPodContainerEnvsFunc: func(ns, pod string) (map[string][]k8s.EnvVar, error) {
+			return map[string][]k8s.EnvVar{
+				"app": {{Name: "DATABASE_URL", SecretName: "db-secret", SecretKey: "url"}},
+			}, nil
+		},
+		GetSecretDataFunc: func(ctx context.Context, ns, secretName string) (map[string]string, error) {
+			return map[string]string{"url": "postgresql+asyncpg://u:p@pgm-z.rds:6432/securedb"}, nil
+		},
+	}
+	f := &credentialFetcher{inspector: inspector}
+	creds, err := f.GetCredentialsFromConnString(context.Background(), "default", "app-1", "DATABASE_URL")
+	require.NoError(t, err)
+	assert.Equal(t, "securedb", creds.Database)
+	assert.Equal(t, "pgm-z.rds", creds.Host)
+	assert.Equal(t, 6432, creds.Port)
 }

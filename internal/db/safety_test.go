@@ -262,8 +262,8 @@ func TestScrubCommentsAndStrings_RemovesWriteKeywords(t *testing.T) {
 		{"SELECT 1 -- DELETE FROM t", true},
 		{"SELECT 1 /* DELETE FROM t */", true},
 		{"SELECT 'DELETE FROM t'", true},
-		{"SELECT \"DELETE\" FROM t", true},  // double-quoted identifier
-		{"SELECT `DELETE` FROM t", true},    // backtick identifier
+		{"SELECT \"DELETE\" FROM t", true}, // double-quoted identifier
+		{"SELECT `DELETE` FROM t", true},   // backtick identifier
 		{"SELECT 'O''Brien' FROM users", true},
 		{"DELETE FROM users", false}, // bare keyword survives
 	}

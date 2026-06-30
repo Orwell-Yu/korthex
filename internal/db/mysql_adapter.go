@@ -7,88 +7,55 @@ import (
 )
 
 // MySQLAdapter implements the Adapter interface for MySQL databases.
+//
+// Execution model mirrors PostgresAdapter: the database is external (managed
+// RDS) reached from inside an application pod that ships pymysql in its venv but
+// has no mysql CLI. The password is NEVER in the argv — the script reads the
+// connection URL from os.environ (env mode) or credentials from stdin (stdin mode).
 type MySQLAdapter struct{}
 
 func (a *MySQLAdapter) Type() DatabaseType {
 	return MySQL
 }
 
-func (a *MySQLAdapter) BuildCommand(sql string, creds Credentials) []string {
-	// Wrap in `sh -c` and pass the password through MYSQL_PWD instead of `-p<password>`.
-	// Two reasons:
-	//   1. `mysql -p<password>` exposes the password to anyone who can `ps aux` in the
-	//      pod's PID namespace. MYSQL_PWD is only visible to processes that can read
-	//      /proc/<pid>/environ — same blast radius as kubectl exec itself.
-	//   2. Without `-p` on the command line, MySQL no longer emits the
-	//      "Using a password on the command line interface can be insecure" warning,
-	//      so we don't have to scrub that string from stdout in ParseOutput.
-	mysqlCmd := fmt.Sprintf("MYSQL_PWD=%s mysql -u %s %s -e %s --batch --raw",
-		shellEscape(creds.Password),
-		shellEscape(creds.Username),
-		shellEscape(creds.Database),
-		shellEscape(sql),
-	)
-	return []string{"sh", "-c", mysqlCmd}
+// mysqlExecScript connects via pymysql and prints {"columns":[...],"rows":[[...]]}.
+//   - env mode:   argv = ["env", connEnvVar, sql]; URL parsed from os.environ[connEnvVar]
+//   - stdin mode: argv = ["stdin", sql]; {host,port,user,password,database} JSON on stdin
+const mysqlExecScript = `
+import sys, os, json, pymysql
+from urllib.parse import urlparse, unquote
+mode = sys.argv[1]
+if mode == "env":
+    raw = os.environ.get(sys.argv[2], "")
+    sql = sys.argv[3]
+    if "://" in raw:  # strip "+aiomysql" etc.
+        scheme, rest = raw.split("://", 1)
+        raw = scheme.split("+")[0] + "://" + rest
+    u = urlparse(raw)
+    conn = dict(host=u.hostname, port=u.port or 3306, user=unquote(u.username or ""),
+                password=unquote(u.password or ""), database=(u.path or "/").lstrip("/") or None)
+else:
+    sql = sys.argv[2]
+    c = json.load(sys.stdin)
+    conn = dict(host=c["host"], port=int(c["port"]), user=c["user"],
+                password=c["password"], database=c["database"] or None)
+con = pymysql.connect(**conn)
+try:
+    cur = con.cursor()
+    cur.execute(sql)
+    cols = [d[0] for d in cur.description] if cur.description else []
+    rows = [["NULL" if v is None else str(v) for v in r] for r in cur.fetchall()]
+finally:
+    con.close()
+sys.stdout.write(json.dumps({"columns": cols, "rows": rows}))
+`
+
+func (a *MySQLAdapter) BuildCommand(sql string, creds Credentials) ([]string, []byte) {
+	return buildPythonCommand(creds, mysqlExecScript, sql)
 }
 
 func (a *MySQLAdapter) ParseOutput(raw []byte) (*QueryResult, error) {
-	// Replace non-UTF-8 bytes
-	s := sanitizeUTF8(raw)
-
-	if strings.TrimSpace(s) == "" {
-		return &QueryResult{
-			Columns:  nil,
-			Rows:     nil,
-			RowCount: 0,
-		}, nil
-	}
-
-	lines := strings.Split(s, "\n")
-
-	// Filter only obvious mysql:* error/info prefixes. We deliberately do NOT silence
-	// generic "Warning: ..." lines anymore — MYSQL_PWD removes the canonical "Using a
-	// password on the command line ..." warning, and any remaining warning lines are
-	// signals the operator should see (deprecation, truncation, charset issues, etc.).
-	var dataLines []string
-	for _, line := range lines {
-		if isInfoLine(line) {
-			continue
-		}
-		if line == "" {
-			continue
-		}
-		dataLines = append(dataLines, line)
-	}
-
-	if len(dataLines) == 0 {
-		return &QueryResult{
-			Columns:  nil,
-			Rows:     nil,
-			RowCount: 0,
-		}, nil
-	}
-
-	// First line is column headers
-	columns := strings.Split(dataLines[0], "\t")
-
-	// Remaining lines are data rows
-	var rows [][]string
-	for _, line := range dataLines[1:] {
-		fields := strings.Split(line, "\t")
-		// Convert MySQL NULL representation
-		for i, f := range fields {
-			if f == "\\N" || f == "NULL" {
-				fields[i] = "NULL"
-			}
-		}
-		rows = append(rows, fields)
-	}
-
-	return &QueryResult{
-		Columns:  columns,
-		Rows:     rows,
-		RowCount: len(rows),
-	}, nil
+	return parseJSONResult(raw)
 }
 
 func (a *MySQLAdapter) ListTablesSQL(database string) string {
@@ -120,14 +87,8 @@ func (a *MySQLAdapter) ForeignKeysSQL(database string) string {
 }
 
 func (a *MySQLAdapter) DetectCLI() []string {
-	return []string{"which", "mysql"}
-}
-
-// isInfoLine returns true if the line is a mysql CLI error/status banner that
-// should be skipped from result parsing (lines prefixed with "mysql:"). Generic
-// "Warning:" lines are intentionally kept so operators see real warnings.
-func isInfoLine(line string) bool {
-	return strings.HasPrefix(strings.ToLower(line), "mysql:")
+	// Probe the python interpreter rather than mysql (pods have no mysql CLI).
+	return []string{"which", "python3"}
 }
 
 // sanitizeUTF8 replaces non-UTF-8 bytes with "?".

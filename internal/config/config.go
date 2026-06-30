@@ -88,8 +88,10 @@ type TracePatternConfig struct {
 // Phase 3 config types
 
 type DatabaseConfig struct {
-	Discovery DiscoveryConfig `yaml:"discovery" mapstructure:"discovery"`
-	Query     QueryConfig     `yaml:"query" mapstructure:"query"`
+	Discovery         DiscoveryConfig `yaml:"discovery" mapstructure:"discovery"`
+	Query             QueryConfig     `yaml:"query" mapstructure:"query"`
+	PythonPath        string          `yaml:"python_path" mapstructure:"python_path"`
+	ConnStringEnvVars []string        `yaml:"conn_string_env_vars" mapstructure:"conn_string_env_vars"`
 }
 
 type DiscoveryConfig struct {
@@ -304,6 +306,12 @@ func (m *manager) Load() (*Config, error) {
 	if v.IsSet("database.discovery.image_patterns") {
 		cfg.Database.Discovery.ImagePatterns = v.GetStringSlice("database.discovery.image_patterns")
 	}
+	if v.IsSet("database.python_path") {
+		cfg.Database.PythonPath = v.GetString("database.python_path")
+	}
+	if v.IsSet("database.conn_string_env_vars") {
+		cfg.Database.ConnStringEnvVars = v.GetStringSlice("database.conn_string_env_vars")
+	}
 	if v.IsSet("database.query.max_rows_per_table") {
 		cfg.Database.Query.MaxRowsPerTable = v.GetInt("database.query.max_rows_per_table")
 	}
@@ -380,6 +388,12 @@ func (m *manager) Save(cfg *Config) error {
 	v.Set("database.discovery.enabled", cfg.Database.Discovery.Enabled)
 	if len(cfg.Database.Discovery.ImagePatterns) > 0 {
 		v.Set("database.discovery.image_patterns", cfg.Database.Discovery.ImagePatterns)
+	}
+	if cfg.Database.PythonPath != "" {
+		v.Set("database.python_path", cfg.Database.PythonPath)
+	}
+	if len(cfg.Database.ConnStringEnvVars) > 0 {
+		v.Set("database.conn_string_env_vars", cfg.Database.ConnStringEnvVars)
 	}
 	v.Set("database.query.max_rows_per_table", cfg.Database.Query.MaxRowsPerTable)
 	v.Set("database.query.max_relation_paths", cfg.Database.Query.MaxRelationPaths)
@@ -477,6 +491,10 @@ func applyDefaults() *Config {
 		Database: DatabaseConfig{
 			Discovery: DiscoveryConfig{
 				Enabled: true,
+			},
+			PythonPath: "/app/server/.venv/bin/python",
+			ConnStringEnvVars: []string{
+				"DATABASE_URL", "USER_MYSQL_URL", "MYSQL_URL", "POSTGRES_URL",
 			},
 			Query: QueryConfig{
 				MaxRowsPerTable:  100,

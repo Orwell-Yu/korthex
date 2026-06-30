@@ -57,15 +57,15 @@ type AgentEvent struct {
 type AgentEventType int
 
 const (
-	EventStreamDelta  AgentEventType = iota // LLM incremental text
-	EventToolCall                           // Agent is invoking a tool
-	EventToolResult                         // Tool returned result
-	EventLogsReady                          // Log lines ready for Log Viewer
-	EventSummary                            // Final analysis summary
-	EventError                              // Error (may trigger retry)
-	EventComplete                           // Agentic loop completed
-	EventKubeSwitch                         // Agent requests kubeconfig/context switch
-	EventMetricsUpdate                      // Token metrics snapshot updated
+	EventStreamDelta   AgentEventType = iota // LLM incremental text
+	EventToolCall                            // Agent is invoking a tool
+	EventToolResult                          // Tool returned result
+	EventLogsReady                           // Log lines ready for Log Viewer
+	EventSummary                             // Final analysis summary
+	EventError                               // Error (may trigger retry)
+	EventComplete                            // Agentic loop completed
+	EventKubeSwitch                          // Agent requests kubeconfig/context switch
+	EventMetricsUpdate                       // Token metrics snapshot updated
 )
 
 // ToolExecutor dispatches tool calls to K8s operations.

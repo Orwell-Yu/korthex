@@ -11,6 +11,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
+	"github.com/muesli/reflow/wrap"
 )
 
 // ChatMessage represents a single message in the chat history.
@@ -617,7 +619,9 @@ func (m ChatModel) View() string {
 	if m.isRunning {
 		b.WriteString("  ") // disabled prompt while running
 	} else {
-		m.input.Width = max(m.width-4, 10)
+		// Reserve columns for the "> " prompt (2) and the panel's 2-col padding so
+		// the textinput viewport + the outer truncateContent don't clip the tail.
+		m.input.Width = max(m.width-len(m.input.Prompt)-2, 10)
 		b.WriteString(m.input.View())
 	}
 
@@ -667,6 +671,10 @@ func (m ChatModel) renderAutocomplete() string {
 func (m ChatModel) renderMessages() []string {
 	var lines []string
 
+	// Wrap width = chat inner width. Keep in sync with truncateContent's maxW so
+	// long tool commands/results fold instead of being clipped at the right edge.
+	wrapW := max(m.width-1, 10)
+
 	// Show collapsed turns indicator (PRD: "earlier N turns collapsed")
 	if m.collapsedTurns > 0 {
 		lines = append(lines, m.theme.Subtitle.Render(
@@ -676,33 +684,33 @@ func (m ChatModel) renderMessages() []string {
 	for _, msg := range m.messages {
 		switch msg.Role {
 		case "user":
-			lines = append(lines, m.theme.AccentStyle().Render("You: ")+msg.Content)
+			lines = append(lines, wrapWithPrefix(m.theme.AccentStyle().Render("You: "), "     ", msg.Content, wrapW)...)
 		case "assistant":
-			// Use cached markdown render if available (only after EventComplete)
+			// Use cached markdown render if available (only after EventComplete).
+			// glamour already word-wraps, so emit its lines as-is with the "AI: "/indent prefix.
+			content := msg.Content
 			if rendered, ok := m.mdRenderer.Get(msg.ID); ok {
-				for j, line := range strings.Split(rendered, "\n") {
+				content = rendered
+				for j, line := range strings.Split(content, "\n") {
 					if j == 0 {
 						lines = append(lines, m.theme.Status.Render("AI: ")+line)
 					} else {
 						lines = append(lines, "    "+line)
 					}
 				}
-			} else {
-				for j, line := range strings.Split(msg.Content, "\n") {
-					if j == 0 {
-						lines = append(lines, m.theme.Status.Render("AI: ")+line)
-					} else {
-						lines = append(lines, "    "+line)
-					}
-				}
+				continue
 			}
+			// Raw (streaming) text: wrap it ourselves.
+			lines = append(lines, wrapWithPrefix(m.theme.Status.Render("AI: "), "    ", content, wrapW)...)
 		case "tool":
 			style := lipgloss.NewStyle().Foreground(m.theme.DimFG)
 			for line := range strings.SplitSeq(msg.Content, "\n") {
-				lines = append(lines, style.Render(line))
+				for _, wl := range wrapPlain(line, wrapW) {
+					lines = append(lines, style.Render(wl))
+				}
 			}
 		case "error":
-			lines = append(lines, m.theme.Error.Render("Error: "+msg.Content))
+			lines = append(lines, wrapWithPrefix(m.theme.Error.Render("Error: "), "       ", msg.Content, wrapW)...)
 		case "status":
 			if msg.Content == "Thinking..." && m.isRunning {
 				lines = append(lines, m.spinner.View()+" "+m.theme.AccentStyle().Render("Thinking..."))
@@ -712,6 +720,36 @@ func (m ChatModel) renderMessages() []string {
 		}
 	}
 	return lines
+}
+
+// wrapPlain word-wraps plain text to width, force-breaking overlong unbreakable
+// tokens so a long no-space string (e.g. a URL) still folds instead of clipping.
+func wrapPlain(s string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	wrapped := wrap.String(wordwrap.String(s, width), width)
+	return strings.Split(wrapped, "\n")
+}
+
+// wrapWithPrefix wraps text to width and prepends prefix to the first visual line
+// and contIndent to each continuation line, so multi-line messages stay aligned.
+func wrapWithPrefix(prefix, contIndent, text string, width int) []string {
+	// Reserve the indent width so wrapped lines + indent don't exceed the panel.
+	body := max(width-len(contIndent), 1)
+	segs := wrapPlain(text, body)
+	out := make([]string, 0, len(segs))
+	for i, seg := range segs {
+		if i == 0 {
+			out = append(out, prefix+seg)
+		} else {
+			out = append(out, contIndent+seg)
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, prefix)
+	}
+	return out
 }
 
 // AccentStyle returns a style using the accent foreground color.

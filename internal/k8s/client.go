@@ -64,6 +64,9 @@ type ResourceDescriber interface {
 // PodExecutor provides kubectl exec capability for running commands inside pods.
 type PodExecutor interface {
 	ExecInPod(ctx context.Context, namespace, podName, container string, command []string) (stdout []byte, stderr []byte, err error)
+	// ExecInPodWithStdin pipes stdin into the command so secrets can be passed
+	// without appearing in the command argv (audit logs / ps output).
+	ExecInPodWithStdin(ctx context.Context, namespace, podName, container string, command []string, stdin []byte) (stdout []byte, stderr []byte, err error)
 }
 
 // PodInspector provides access to pod spec details (env vars) and K8s secrets.

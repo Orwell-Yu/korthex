@@ -1,6 +1,7 @@
 package db
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,215 +27,177 @@ func TestAdapterFor_Unknown(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// --- MySQL Adapter Tests ---
+// --- BuildCommand: secrets never in argv ---
 
-func TestMySQLAdapter_BuildCommand(t *testing.T) {
+// containsValue reports whether any argv element equals or contains the secret.
+func argvLeaks(argv []string, secret string) bool {
+	for _, a := range argv {
+		if secret != "" && strings.Contains(a, secret) {
+			return true
+		}
+	}
+	return false
+}
+
+// env-name mode: connection string read from os.environ in-pod; argv carries only
+// the env var NAME and the SQL — never the password.
+func TestMySQLAdapter_BuildCommand_EnvMode_NoPassword(t *testing.T) {
 	a := &MySQLAdapter{}
 	creds := Credentials{
-		Username: "root",
-		Password: "secret",
-		Database: "testdb",
+		Username:   "root",
+		Password:   "p@ss w'or$d",
+		Database:   "testdb",
+		Host:       "rm-xxx.rds.aliyuncs.com",
+		Port:       3306,
+		PythonPath: "/app/server/.venv/bin/python",
+		ConnEnvVar: "USER_MYSQL_URL",
 	}
+	sql := "SELECT * FROM users"
+	argv, stdin := a.BuildCommand(sql, creds)
 
-	cmd := a.BuildCommand("SELECT * FROM users", creds)
-	assert.Equal(t, []string{"sh", "-c"}, cmd[:2])
-	assert.Contains(t, cmd[2], "MYSQL_PWD='secret'")
-	assert.Contains(t, cmd[2], "mysql -u 'root' 'testdb'")
-	assert.Contains(t, cmd[2], "-e 'SELECT * FROM users'")
-	assert.Contains(t, cmd[2], "--batch")
-	assert.Contains(t, cmd[2], "--raw")
-	// Password must not leak onto the command line as `-p<password>`.
-	assert.NotContains(t, cmd[2], "-psecret")
-	assert.NotContains(t, cmd[2], "-p'secret'")
+	// argv: python -c <script> env <connEnvVar> sql
+	require.Len(t, argv, 6)
+	assert.Equal(t, "/app/server/.venv/bin/python", argv[0])
+	assert.Equal(t, "-c", argv[1])
+	assert.Contains(t, argv[2], "pymysql")
+	assert.Equal(t, "env", argv[3])
+	assert.Equal(t, "USER_MYSQL_URL", argv[4])
+	assert.Equal(t, sql, argv[5])
+	assert.Nil(t, stdin, "env mode needs no stdin")
+	assert.False(t, argvLeaks(argv, creds.Password), "password must NOT appear in argv")
 }
 
-// TestMySQLAdapter_BuildCommand_PasswordWithSpecialChars — the password is
-// shell-escaped so special characters (spaces, quotes, $) don't break the
-// `sh -c` wrapper or leak as separate tokens.
-func TestMySQLAdapter_BuildCommand_PasswordWithSpecialChars(t *testing.T) {
-	a := &MySQLAdapter{}
+func TestPostgresAdapter_BuildCommand_EnvMode_NoPassword(t *testing.T) {
+	a := &PostgresAdapter{}
 	creds := Credentials{
-		Username: "root",
-		Password: "p@ss w'or$d",
-		Database: "testdb",
+		Username:   "postgres",
+		Password:   "supersecret",
+		Database:   "bizdb",
+		Host:       "pgm-xxx.pg.rds.aliyuncs.com",
+		Port:       6432,
+		PythonPath: "/app/server/.venv/bin/python",
+		ConnEnvVar: "DATABASE_URL",
 	}
-	cmd := a.BuildCommand("SELECT 1", creds)
-	// shellEscape encodes an embedded apostrophe as '"'"' (close quote, "'", reopen quote).
-	assert.Contains(t, cmd[2], `MYSQL_PWD='p@ss w'"'"'or$d'`)
+	argv, stdin := a.BuildCommand("SELECT 1", creds)
+
+	require.Len(t, argv, 6)
+	assert.Contains(t, argv[2], "asyncpg")
+	assert.Equal(t, "env", argv[3])
+	assert.Equal(t, "DATABASE_URL", argv[4])
+	assert.Equal(t, "SELECT 1", argv[5])
+	assert.Nil(t, stdin)
+	assert.False(t, argvLeaks(argv, creds.Password), "password must NOT appear in argv")
 }
 
-func TestMySQLAdapter_ParseOutput_Normal(t *testing.T) {
+// stdin mode (in-cluster fallback, no ConnEnvVar): password travels via stdin JSON,
+// still never in argv.
+func TestBuildCommand_StdinMode_PasswordInStdinNotArgv(t *testing.T) {
+	a := &PostgresAdapter{}
+	creds := Credentials{
+		Username:   "postgres",
+		Password:   "secret-in-stdin",
+		Database:   "d",
+		Host:       "10.0.0.5",
+		Port:       5432,
+		PythonPath: "/app/server/.venv/bin/python",
+		// ConnEnvVar empty → stdin mode
+	}
+	argv, stdin := a.BuildCommand("SELECT 1", creds)
+
+	require.Len(t, argv, 5)
+	assert.Equal(t, "stdin", argv[3])
+	assert.Equal(t, "SELECT 1", argv[4])
+	assert.False(t, argvLeaks(argv, creds.Password), "password must NOT appear in argv")
+	require.NotNil(t, stdin)
+	assert.Contains(t, string(stdin), "secret-in-stdin", "password is delivered via stdin JSON")
+	assert.Contains(t, string(stdin), `"host":"10.0.0.5"`)
+}
+
+func TestBuildCommand_DefaultPythonPath(t *testing.T) {
+	a := &PostgresAdapter{}
+	// PythonPath empty → fall back to the documented default.
+	argv, _ := a.BuildCommand("SELECT 1", Credentials{ConnEnvVar: "DATABASE_URL"})
+	assert.Equal(t, "/app/server/.venv/bin/python", argv[0])
+}
+
+// --- ParseOutput: JSON from the in-pod python scripts ---
+
+func TestParseJSONResult_Normal(t *testing.T) {
 	a := &MySQLAdapter{}
-	// Tab-separated output with 3 columns, 5 rows
-	raw := []byte("id\tname\temail\n1\tAlice\talice@example.com\n2\tBob\tbob@example.com\n3\tCharlie\tcharlie@example.com\n4\tDave\tdave@example.com\n5\tEve\teve@example.com\n")
+	raw := []byte(`{"columns":["id","name","email"],"rows":[["1","Alice","a@x.com"],["2","Bob","b@x.com"]]}`)
 
 	result, err := a.ParseOutput(raw)
 	require.NoError(t, err)
-
 	assert.Equal(t, []string{"id", "name", "email"}, result.Columns)
-	assert.Equal(t, 5, result.RowCount)
-	assert.Equal(t, []string{"1", "Alice", "alice@example.com"}, result.Rows[0])
-	assert.Equal(t, []string{"5", "Eve", "eve@example.com"}, result.Rows[4])
-}
-
-func TestMySQLAdapter_ParseOutput_Empty(t *testing.T) {
-	a := &MySQLAdapter{}
-	// Header only, no data rows
-	raw := []byte("id\tname\temail\n")
-
-	result, err := a.ParseOutput(raw)
-	require.NoError(t, err)
-
-	assert.Equal(t, []string{"id", "name", "email"}, result.Columns)
-	assert.Equal(t, 0, result.RowCount)
-	assert.Nil(t, result.Rows)
-}
-
-func TestMySQLAdapter_ParseOutput_NullValues(t *testing.T) {
-	a := &MySQLAdapter{}
-	raw := []byte("id\tname\tage\n1\tAlice\t\\N\n2\t\\N\t25\n")
-
-	result, err := a.ParseOutput(raw)
-	require.NoError(t, err)
-
 	assert.Equal(t, 2, result.RowCount)
-	assert.Equal(t, []string{"1", "Alice", "NULL"}, result.Rows[0])
-	assert.Equal(t, []string{"2", "NULL", "25"}, result.Rows[1])
+	assert.Equal(t, []string{"1", "Alice", "a@x.com"}, result.Rows[0])
 }
 
-func TestMySQLAdapter_ParseOutput_WarningsKept(t *testing.T) {
-	a := &MySQLAdapter{}
-	// Generic "Warning:" lines are no longer silenced (operator should see deprecation
-	// notices etc.). The first non-empty line is now treated as the header row.
-	raw := []byte("Warning: deprecated feature X\nid\tname\n1\tAlice\n2\tBob\n")
-
-	result, err := a.ParseOutput(raw)
-	require.NoError(t, err)
-
-	// Header is the warning line because we no longer skip it; downstream consumers
-	// should see real warnings and decide how to surface them.
-	assert.Equal(t, []string{"Warning: deprecated feature X"}, result.Columns)
-}
-
-func TestMySQLAdapter_ParseOutput_MysqlPrefixedInfoSkipped(t *testing.T) {
-	a := &MySQLAdapter{}
-	// Lines beginning with "mysql:" (e.g., mysql client status banners) are still skipped.
-	raw := []byte("mysql: [Note] connecting to mysqld\nid\tname\n1\tAlice\n")
-
-	result, err := a.ParseOutput(raw)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"id", "name"}, result.Columns)
-	assert.Equal(t, 1, result.RowCount)
-}
-
-func TestMySQLAdapter_ParseOutput_CompletelyEmpty(t *testing.T) {
-	a := &MySQLAdapter{}
-	raw := []byte("")
-
-	result, err := a.ParseOutput(raw)
-	require.NoError(t, err)
-	assert.Equal(t, 0, result.RowCount)
-	assert.Nil(t, result.Columns)
-}
-
-func TestMySQLAdapter_ParseOutput_NonUTF8(t *testing.T) {
-	a := &MySQLAdapter{}
-	// Include invalid UTF-8 byte
-	raw := []byte("id\tname\n1\tAl\xfece\n")
-
-	result, err := a.ParseOutput(raw)
-	require.NoError(t, err)
-	assert.Equal(t, 1, result.RowCount)
-	assert.Equal(t, "Al?ce", result.Rows[0][1]) // invalid byte replaced with ?
-}
-
-// --- PostgreSQL Adapter Tests ---
-
-func TestPostgresAdapter_BuildCommand(t *testing.T) {
+func TestParseJSONResult_NullValues(t *testing.T) {
 	a := &PostgresAdapter{}
-	creds := Credentials{
-		Username: "postgres",
-		Password: "secret",
-		Database: "testdb",
-	}
-
-	cmd := a.BuildCommand("SELECT * FROM users", creds)
-	// PostgreSQL adapter wraps in sh -c with PGPASSWORD prefix
-	assert.Equal(t, []string{"sh", "-c"}, cmd[:2])
-	assert.Contains(t, cmd[2], "PGPASSWORD='secret'")
-	assert.Contains(t, cmd[2], "psql -U 'postgres' -d 'testdb'")
-	assert.Contains(t, cmd[2], "-c 'SELECT * FROM users'")
-	assert.Contains(t, cmd[2], "--no-align")
-	assert.Contains(t, cmd[2], "--field-separator=")
-}
-
-func TestPostgresAdapter_ParseOutput_Normal(t *testing.T) {
-	a := &PostgresAdapter{}
-	// Pipe-separated output with separator line and footer
-	raw := []byte("id|name|email\n---+---+---\n1|Alice|alice@example.com\n2|Bob|bob@example.com\n3|Charlie|charlie@example.com\n4|Dave|dave@example.com\n5|Eve|eve@example.com\n(5 rows)\n")
+	raw := []byte(`{"columns":["id","name","age"],"rows":[["1","NULL","25"],["2","Bob","NULL"]]}`)
 
 	result, err := a.ParseOutput(raw)
 	require.NoError(t, err)
-
-	assert.Equal(t, []string{"id", "name", "email"}, result.Columns)
-	assert.Equal(t, 5, result.RowCount)
-	assert.Equal(t, []string{"1", "Alice", "alice@example.com"}, result.Rows[0])
-	assert.Equal(t, []string{"5", "Eve", "eve@example.com"}, result.Rows[4])
-}
-
-func TestPostgresAdapter_ParseOutput_SeparatorSkipped(t *testing.T) {
-	a := &PostgresAdapter{}
-	raw := []byte("col1|col2\n----+----\nval1|val2\n(1 row)\n")
-
-	result, err := a.ParseOutput(raw)
-	require.NoError(t, err)
-
-	assert.Equal(t, []string{"col1", "col2"}, result.Columns)
-	assert.Equal(t, 1, result.RowCount)
-	assert.Equal(t, []string{"val1", "val2"}, result.Rows[0])
-}
-
-func TestPostgresAdapter_ParseOutput_FooterSkipped(t *testing.T) {
-	a := &PostgresAdapter{}
-	raw := []byte("id|name\n--+--\n1|Alice\n2|Bob\n(2 rows)\n")
-
-	result, err := a.ParseOutput(raw)
-	require.NoError(t, err)
-
-	assert.Equal(t, 2, result.RowCount)
-}
-
-func TestPostgresAdapter_ParseOutput_Empty(t *testing.T) {
-	a := &PostgresAdapter{}
-	raw := []byte("")
-
-	result, err := a.ParseOutput(raw)
-	require.NoError(t, err)
-	assert.Equal(t, 0, result.RowCount)
-	assert.Nil(t, result.Columns)
-}
-
-func TestPostgresAdapter_ParseOutput_NullValues(t *testing.T) {
-	a := &PostgresAdapter{}
-	// PostgreSQL represents NULL as empty string in unaligned output
-	raw := []byte("id|name|age\n--+--+--\n1||25\n2|Bob|\n(2 rows)\n")
-
-	result, err := a.ParseOutput(raw)
-	require.NoError(t, err)
-
 	assert.Equal(t, 2, result.RowCount)
 	assert.Equal(t, []string{"1", "NULL", "25"}, result.Rows[0])
 	assert.Equal(t, []string{"2", "Bob", "NULL"}, result.Rows[1])
 }
 
-func TestPostgresAdapter_ParseOutput_HeaderOnlyNoRows(t *testing.T) {
+func TestParseJSONResult_EmptyResult(t *testing.T) {
 	a := &PostgresAdapter{}
-	raw := []byte("id|name|email\n--+--+--\n(0 rows)\n")
+	raw := []byte(`{"columns":[],"rows":[]}`)
 
 	result, err := a.ParseOutput(raw)
 	require.NoError(t, err)
-
-	assert.Equal(t, []string{"id", "name", "email"}, result.Columns)
 	assert.Equal(t, 0, result.RowCount)
-	assert.Nil(t, result.Rows)
+	assert.Empty(t, result.Columns)
+}
+
+func TestParseJSONResult_CompletelyEmpty(t *testing.T) {
+	a := &MySQLAdapter{}
+	result, err := a.ParseOutput([]byte(""))
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.RowCount)
+	assert.Nil(t, result.Columns)
+}
+
+func TestParseJSONResult_HeaderOnlyNoRows(t *testing.T) {
+	a := &PostgresAdapter{}
+	raw := []byte(`{"columns":["id","name"],"rows":[]}`)
+
+	result, err := a.ParseOutput(raw)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"id", "name"}, result.Columns)
+	assert.Equal(t, 0, result.RowCount)
+}
+
+// TrailingNoise: scripts print pure JSON, but if a warning slips onto an earlier
+// line, we decode the last line.
+func TestParseJSONResult_TrailingJSONLine(t *testing.T) {
+	a := &MySQLAdapter{}
+	raw := []byte("some warning to stderr leaked\n{\"columns\":[\"x\"],\"rows\":[[\"1\"]]}")
+
+	result, err := a.ParseOutput(raw)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.RowCount)
+	assert.Equal(t, []string{"x"}, result.Columns)
+}
+
+func TestParseJSONResult_NotJSON_Errors(t *testing.T) {
+	a := &PostgresAdapter{}
+	// A python traceback (e.g. auth failure) must surface as an error, not a panic.
+	_, err := a.ParseOutput([]byte("Traceback (most recent call last):\n  asyncpg.InvalidPasswordError"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not JSON")
+}
+
+func TestParseJSONResult_NonUTF8(t *testing.T) {
+	a := &MySQLAdapter{}
+	// Invalid UTF-8 byte inside a value is sanitized before JSON decode.
+	raw := []byte(`{"columns":["name"],"rows":[["Al` + "\xfe" + `ce"]]}`)
+	result, err := a.ParseOutput(raw)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.RowCount)
+	assert.Equal(t, "Al?ce", result.Rows[0][0])
 }

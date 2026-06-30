@@ -2,89 +2,59 @@ package db
 
 import (
 	"fmt"
-	"strings"
 )
 
 // PostgresAdapter implements the Adapter interface for PostgreSQL databases.
+//
+// Execution model: databases are external (managed RDS) reached from inside an
+// application pod, which has no psql CLI but does ship asyncpg in its venv. SQL
+// runs through pgExecScript. The connection password is NEVER in the argv: either
+// the script reads the connection URL from os.environ (env mode) or receives the
+// credentials via stdin (stdin mode).
 type PostgresAdapter struct{}
 
 func (a *PostgresAdapter) Type() DatabaseType {
 	return PostgreSQL
 }
 
-func (a *PostgresAdapter) BuildCommand(sql string, creds Credentials) []string {
-	// kubectl exec cannot set env vars, so we wrap in sh -c with PGPASSWORD prefix.
-	psqlCmd := fmt.Sprintf("PGPASSWORD=%s psql -U %s -d %s -c %s --no-align --tuples-only=off --field-separator='|'",
-		shellEscape(creds.Password),
-		shellEscape(creds.Username),
-		shellEscape(creds.Database),
-		shellEscape(sql),
-	)
-	return []string{"sh", "-c", psqlCmd}
+// pgExecScript connects via asyncpg and prints {"columns":[...],"rows":[[...]]}.
+// argv: mode sql   (mode="env": argv also has [envVar]; mode="stdin": creds JSON on stdin)
+//   - env mode:   argv = ["env", connEnvVar, sql]; URL from os.environ[connEnvVar]
+//   - stdin mode: argv = ["stdin", sql]; {host,port,user,password,database} JSON on stdin
+const pgExecScript = `
+import sys, os, json, asyncio, asyncpg
+mode = sys.argv[1]
+if mode == "env":
+    raw = os.environ.get(sys.argv[2], "")
+    sql = sys.argv[3]
+    # strip SQLAlchemy "+driver" suffix (e.g. postgresql+asyncpg://)
+    if "://" in raw:
+        scheme, rest = raw.split("://", 1)
+        raw = scheme.split("+")[0] + "://" + rest
+    conn = {"dsn": raw}
+else:
+    sql = sys.argv[2]
+    c = json.load(sys.stdin)
+    conn = {"host": c["host"], "port": int(c["port"]), "user": c["user"],
+            "password": c["password"], "database": c["database"]}
+async def main():
+    con = await asyncpg.connect(**conn)
+    try:
+        rows = await con.fetch(sql)
+    finally:
+        await con.close()
+    cols = list(rows[0].keys()) if rows else []
+    out = [["NULL" if v is None else str(v) for v in r.values()] for r in rows]
+    sys.stdout.write(json.dumps({"columns": cols, "rows": out}))
+asyncio.run(main())
+`
+
+func (a *PostgresAdapter) BuildCommand(sql string, creds Credentials) ([]string, []byte) {
+	return buildPythonCommand(creds, pgExecScript, sql)
 }
 
 func (a *PostgresAdapter) ParseOutput(raw []byte) (*QueryResult, error) {
-	s := sanitizeUTF8(raw)
-
-	if strings.TrimSpace(s) == "" {
-		return &QueryResult{
-			Columns:  nil,
-			Rows:     nil,
-			RowCount: 0,
-		}, nil
-	}
-
-	lines := strings.Split(s, "\n")
-
-	// Filter out empty lines and footer lines
-	var dataLines []string
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		// Skip footer "(N rows)" line
-		if isRowCountFooter(trimmed) {
-			continue
-		}
-		dataLines = append(dataLines, line)
-	}
-
-	if len(dataLines) == 0 {
-		return &QueryResult{
-			Columns:  nil,
-			Rows:     nil,
-			RowCount: 0,
-		}, nil
-	}
-
-	// First line is column headers
-	columns := splitAndTrim(dataLines[0], "|")
-
-	// Find and skip separator line (---+--- pattern)
-	startIdx := 1
-	if startIdx < len(dataLines) && isSeparatorLine(dataLines[startIdx]) {
-		startIdx = 2
-	}
-
-	// Remaining lines are data rows
-	var rows [][]string
-	for _, line := range dataLines[startIdx:] {
-		fields := splitAndTrim(line, "|")
-		// Convert empty strings (PostgreSQL NULL representation) to "NULL"
-		for i, f := range fields {
-			if f == "" {
-				fields[i] = "NULL"
-			}
-		}
-		rows = append(rows, fields)
-	}
-
-	return &QueryResult{
-		Columns:  columns,
-		Rows:     rows,
-		RowCount: len(rows),
-	}, nil
+	return parseJSONResult(raw)
 }
 
 func (a *PostgresAdapter) ListTablesSQL(database string) string {
@@ -120,35 +90,6 @@ func (a *PostgresAdapter) ForeignKeysSQL(database string) string {
 }
 
 func (a *PostgresAdapter) DetectCLI() []string {
-	return []string{"which", "psql"}
-}
-
-// isSeparatorLine checks if a line is a psql separator (e.g., "---+---+---").
-func isSeparatorLine(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	if len(trimmed) == 0 {
-		return false
-	}
-	for _, c := range trimmed {
-		if c != '-' && c != '+' {
-			return false
-		}
-	}
-	return true
-}
-
-// isRowCountFooter checks if a line is the psql footer like "(5 rows)" or "(0 rows)".
-func isRowCountFooter(line string) bool {
-	return strings.HasPrefix(line, "(") && strings.HasSuffix(line, "rows)") ||
-		strings.HasPrefix(line, "(") && strings.HasSuffix(line, "row)")
-}
-
-// splitAndTrim splits a string by separator and trims whitespace from each field.
-func splitAndTrim(s, sep string) []string {
-	parts := strings.Split(s, sep)
-	result := make([]string, len(parts))
-	for i, p := range parts {
-		result[i] = strings.TrimSpace(p)
-	}
-	return result
+	// Probe the python interpreter rather than psql (pods have no psql).
+	return []string{"which", "python3"}
 }

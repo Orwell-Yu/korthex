@@ -2,7 +2,7 @@ package db
 
 import (
 	"context"
-	"strings"
+	"encoding/json"
 	"sync"
 	"testing"
 
@@ -11,128 +11,63 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// extractSQLFromShellCmd parses the inline `sh -c` script produced by the MySQL
-// and PostgreSQL adapters and returns the SQL passed via `-e 'SQL'` or `-c 'SQL'`.
-// Mirrors the single-quote escaping rules of shellEscape (' → '\'').
-// extractSQLFromShellCmd parses the inline `sh -c` script produced by the MySQL
-// and PostgreSQL adapters and returns the SQL passed via `-e 'SQL'` or `-c 'SQL'`.
-// Mirrors the single-quote escaping rules of shellEscape: an embedded apostrophe
-// is rendered as '"'"' (close quote, double-quoted apostrophe, reopen quote).
-func extractSQLFromShellCmd(script string) string {
-	for _, flag := range []string{"-e ", "-c "} {
-		idx := strings.Index(script, flag)
-		if idx < 0 {
-			continue
-		}
-		rest := script[idx+len(flag):]
-		if len(rest) == 0 || rest[0] != '\'' {
-			continue
-		}
-		var b strings.Builder
-		i := 1
-		for i < len(rest) {
-			if rest[i] == '\'' {
-				// shellEscape encodes ' as '"'"' (5 bytes after the close quote).
-				if i+4 < len(rest) && rest[i+1] == '"' && rest[i+2] == '\'' && rest[i+3] == '"' && rest[i+4] == '\'' {
-					b.WriteByte('\'')
-					i += 5
-					continue
-				}
-				return b.String()
-			}
-			b.WriteByte(rest[i])
-			i++
-		}
-		return b.String()
+// sqlFromArgv returns the SQL from a python exec argv (the final positional arg).
+func sqlFromArgv(cmd []string) string {
+	if len(cmd) == 0 {
+		return ""
 	}
-	return ""
+	return cmd[len(cmd)-1]
 }
 
 func newMockSchemaInspector(responses map[string]*QueryResult) *schemaInspector {
-	callIdx := 0
-	order := make([]string, 0, len(responses))
-	for k := range responses {
-		order = append(order, k)
-	}
-
 	mockExec := &k8s.MockPodExecutor{
 		ExecInPodFunc: func(ctx context.Context, ns, pod, container string, cmd []string) ([]byte, []byte, error) {
-			// Both adapters now wrap in `sh -c "<inline cmd>"`. Extract the SQL by
-			// scanning the inline script for the `-e 'SQL'` (mysql) or `-c 'SQL'` (psql)
-			// argument; shell-quoted SQL is delimited by surrounding single quotes.
-			var sql string
-			if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" {
-				sql = extractSQLFromShellCmd(cmd[2])
-			} else {
-				// Legacy direct-exec form (kept for any future adapter that doesn't wrap).
-				for i, c := range cmd {
-					if c == "-e" || c == "-c" {
-						if i+1 < len(cmd) {
-							sql = cmd[i+1]
-						}
-						break
-					}
-				}
-			}
-
-			// Return based on SQL content keywords
+			sql := sqlFromArgv(cmd)
 			if result, ok := responses[sql]; ok {
-				return renderMySQLOutput(result), nil, nil
+				return renderJSONOutput(result), nil, nil
 			}
-
-			// Fallback: return empty
-			callIdx++
 			return []byte(""), nil, nil
 		},
 	}
 
 	creds := &sync.Map{}
-	creds.Store("default/mysql-0", &Credentials{
-		Username: "root",
-		Password: "pass",
-		Database: "testdb",
+	creds.Store(credsKey("default", "mysql-0", "testdb"), &Credentials{
+		Username:   "root",
+		Password:   "pass",
+		Database:   "testdb",
+		Host:       "rm-x",
+		Port:       3306,
+		PythonPath: "/app/server/.venv/bin/python",
 	})
 
 	exec := &executor{
 		podExec:         mockExec,
 		creds:           creds,
 		maxRowsPerTable: 100,
+		pythonPath:      "/app/server/.venv/bin/python",
 	}
 
 	return &schemaInspector{exec: exec}
 }
 
-// renderMySQLOutput converts a QueryResult to MySQL tab-separated format.
-func renderMySQLOutput(qr *QueryResult) []byte {
-	if qr == nil || len(qr.Columns) == 0 {
-		return []byte("")
+// renderJSONOutput converts a QueryResult to the JSON the in-pod python emits.
+func renderJSONOutput(qr *QueryResult) []byte {
+	if qr == nil {
+		return []byte(`{"columns":[],"rows":[]}`)
 	}
-
-	var lines []string
-	lines = append(lines, joinTabs(qr.Columns))
-	for _, row := range qr.Rows {
-		lines = append(lines, joinTabs(row))
+	cols := qr.Columns
+	if cols == nil {
+		cols = []string{}
 	}
-	return []byte(joinLines(lines))
-}
-
-func joinTabs(parts []string) string {
-	result := ""
-	for i, p := range parts {
-		if i > 0 {
-			result += "\t"
-		}
-		result += p
+	rows := qr.Rows
+	if rows == nil {
+		rows = [][]string{}
 	}
-	return result
-}
-
-func joinLines(lines []string) string {
-	result := ""
-	for _, l := range lines {
-		result += l + "\n"
-	}
-	return result
+	b, _ := json.Marshal(struct {
+		Columns []string   `json:"columns"`
+		Rows    [][]string `json:"rows"`
+	}{cols, rows})
+	return b
 }
 
 func TestSchema_GetSchema_Tables(t *testing.T) {
@@ -221,33 +156,29 @@ func TestSchema_CacheHit(t *testing.T) {
 	mockExec := &k8s.MockPodExecutor{
 		ExecInPodFunc: func(ctx context.Context, ns, pod, container string, cmd []string) ([]byte, []byte, error) {
 			callCount++
-			var sql string
-			for i, c := range cmd {
-				if c == "-e" || c == "-c" {
-					if i+1 < len(cmd) {
-						sql = cmd[i+1]
-					}
-					break
-				}
-			}
+			sql := sqlFromArgv(cmd)
 			if result, ok := responses[sql]; ok {
-				return renderMySQLOutput(result), nil, nil
+				return renderJSONOutput(result), nil, nil
 			}
 			return []byte(""), nil, nil
 		},
 	}
 
 	creds := &sync.Map{}
-	creds.Store("default/mysql-0", &Credentials{
-		Username: "root",
-		Password: "pass",
-		Database: "testdb",
+	creds.Store(credsKey("default", "mysql-0", "testdb"), &Credentials{
+		Username:   "root",
+		Password:   "pass",
+		Database:   "testdb",
+		Host:       "rm-x",
+		Port:       3306,
+		PythonPath: "/app/server/.venv/bin/python",
 	})
 
 	exec := &executor{
 		podExec:         mockExec,
 		creds:           creds,
 		maxRowsPerTable: 100,
+		pythonPath:      "/app/server/.venv/bin/python",
 	}
 
 	inspector := &schemaInspector{exec: exec}

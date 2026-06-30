@@ -226,17 +226,17 @@ func (t *toolExecutor) ToolDefinitions() []llm.ToolDefinition {
 		// Phase 3: Database tools
 		{
 			Name:        "discover_databases",
-			Description: "Discover database Pods (MySQL/PostgreSQL) in a namespace by scanning images, ports, and labels.",
+			Description: "Discover databases reachable from a namespace. Returns one entry per logical database (often an external managed/RDS database reached via a running application pod that holds its connection string). The returned podName is the exec entry point — use it directly in the other DB tools.",
 			Parameters: []llm.ParameterDef{
-				{Name: "namespace", Type: "string", Description: "Kubernetes namespace to scan for database Pods", Required: true},
+				{Name: "namespace", Type: "string", Description: "Kubernetes namespace to scan", Required: true},
 			},
 		},
 		{
 			Name:        "get_db_credentials",
-			Description: "Obtain database credentials for a specific Pod by inspecting environment variables and Secrets.",
+			Description: "Resolve database credentials for a discovered database by reading the connection string from the application pod's environment. Call discover_databases first.",
 			Parameters: []llm.ParameterDef{
 				{Name: "namespace", Type: "string", Description: "Kubernetes namespace", Required: true},
-				{Name: "podName", Type: "string", Description: "Database Pod name", Required: true},
+				{Name: "podName", Type: "string", Description: "Application pod name returned by discover_databases", Required: true},
 			},
 		},
 		{
@@ -244,19 +244,20 @@ func (t *toolExecutor) ToolDefinitions() []llm.ToolDefinition {
 			Description: "Introspect database schema (tables, columns, types, primary keys) and foreign key relationships.",
 			Parameters: []llm.ParameterDef{
 				{Name: "namespace", Type: "string", Description: "Kubernetes namespace", Required: true},
-				{Name: "podName", Type: "string", Description: "Database Pod name", Required: true},
-				{Name: "database", Type: "string", Description: "Database name", Required: true},
+				{Name: "podName", Type: "string", Description: "Application pod name returned by discover_databases", Required: true},
+				{Name: "database", Type: "string", Description: "Database name (from discover_databases)", Required: true},
 			},
 		},
 		{
 			Name:        "query_database",
-			Description: "Execute a read-only SQL query against a database Pod. Only SELECT/SHOW/DESCRIBE/EXPLAIN statements are allowed.",
+			Description: "Execute a read-only SQL query against a discovered database. Only SELECT/SHOW/DESCRIBE/EXPLAIN statements are allowed.",
 			Parameters: []llm.ParameterDef{
 				{Name: "namespace", Type: "string", Description: "Kubernetes namespace", Required: true},
-				{Name: "podName", Type: "string", Description: "Database Pod name", Required: true},
-				{Name: "database", Type: "string", Description: "Database name", Required: true},
+				{Name: "podName", Type: "string", Description: "Application pod name returned by discover_databases", Required: true},
+				{Name: "database", Type: "string", Description: "Database name (from discover_databases)", Required: true},
 				{Name: "sql", Type: "string", Description: "SQL query (SELECT only)", Required: true},
 				{Name: "limit", Type: "string", Description: "Maximum rows to return (default from config)", Required: false},
+				{Name: "table", Type: "string", Description: "Primary table being queried; labels the result tab in the Data Viewer", Required: false},
 			},
 		},
 		{
@@ -264,7 +265,7 @@ func (t *toolExecutor) ToolDefinitions() []llm.ToolDefinition {
 			Description: "Get foreign key relationships for a specific table, showing parent-child column mappings.",
 			Parameters: []llm.ParameterDef{
 				{Name: "namespace", Type: "string", Description: "Kubernetes namespace", Required: true},
-				{Name: "podName", Type: "string", Description: "Database Pod name", Required: true},
+				{Name: "podName", Type: "string", Description: "Application pod name returned by discover_databases", Required: true},
 				{Name: "database", Type: "string", Description: "Database name", Required: true},
 				{Name: "table", Type: "string", Description: "Table name", Required: true},
 			},
@@ -455,15 +456,15 @@ func GenerateCommandDisplay(name string, args map[string]string) string {
 		return cmd
 	// Phase 3: Database tools
 	case "discover_databases":
-		return fmt.Sprintf("kubectl get pods -n %s --field-selector=status.phase=Running (DB discovery)", args["namespace"])
+		return fmt.Sprintf("kubectl get pods -n %s (scan app pods for DB connection strings)", args["namespace"])
 	case "get_db_credentials":
-		return fmt.Sprintf("kubectl exec -n %s %s -- env | grep -i password", args["namespace"], args["podName"])
+		return fmt.Sprintf("kubectl exec -n %s %s -- env (read connection string)", args["namespace"], args["podName"])
 	case "get_db_schema":
-		return fmt.Sprintf("kubectl exec -n %s %s -- mysql -e \"SELECT * FROM INFORMATION_SCHEMA.TABLES\"", args["namespace"], args["podName"])
+		return fmt.Sprintf("kubectl exec -n %s %s -- python (introspect schema for %q)", args["namespace"], args["podName"], args["database"])
 	case "query_database":
-		return fmt.Sprintf("kubectl exec -n %s %s -- mysql -e %q", args["namespace"], args["podName"], args["sql"])
+		return fmt.Sprintf("kubectl exec -n %s %s -- python (run SQL on %q): %s", args["namespace"], args["podName"], args["database"], args["sql"])
 	case "get_foreign_keys":
-		return fmt.Sprintf("kubectl exec -n %s %s -- mysql -e \"SELECT ... FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE\"", args["namespace"], args["podName"])
+		return fmt.Sprintf("kubectl exec -n %s %s -- python (foreign keys for %q)", args["namespace"], args["podName"], args["table"])
 	default:
 		return name
 	}
@@ -1415,6 +1416,7 @@ func (t *toolExecutor) queryDatabase(ctx context.Context, args map[string]string
 	podName := args["podName"]
 	database := args["database"]
 	sql := args["sql"]
+	table := args["table"] // optional: labels the Data Viewer result tab
 	if ns == "" || podName == "" || database == "" || sql == "" {
 		return "", nil, fmt.Errorf("namespace, podName, database, and sql are required")
 	}
@@ -1475,9 +1477,9 @@ func (t *toolExecutor) queryDatabase(ctx context.Context, args map[string]string
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "[query_result]\n")
-	fmt.Fprintf(&b, `{"columns":%s,"rows":%s,"row_count":%d,"truncated":%t,"database":%s,"namespace":%s,"pod_name":%s}`,
+	fmt.Fprintf(&b, `{"columns":%s,"rows":%s,"row_count":%d,"truncated":%t,"database":%s,"namespace":%s,"pod_name":%s,"table_name":%s}`,
 		colsJSON, rowsJSON, result.RowCount, result.Truncated,
-		strconv.Quote(database), strconv.Quote(ns), strconv.Quote(podName))
+		strconv.Quote(database), strconv.Quote(ns), strconv.Quote(podName), strconv.Quote(table))
 	fmt.Fprintf(&b, "\n[/query_result]\n\n")
 
 	if result.Truncated {

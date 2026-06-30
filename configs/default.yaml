@@ -40,3 +40,26 @@ history:
 
 analysis:
   trace_id_patterns: []            # custom trace ID patterns: [{name, pattern}]
+
+# --- Phase 3 additions ---
+
+database:
+  discovery:
+    enabled: true                  # scan namespaces for reachable databases
+    image_patterns: []             # extra in-cluster DB image substrings (fallback)
+  # RDS-via-pod model: databases live outside the cluster (managed RDS) and are
+  # queried by exec-ing into a running application pod that holds the connection
+  # string in its environment. The pod runs SQL via this Python interpreter.
+  python_path: "/app/server/.venv/bin/python"
+  # Env var names (on application pods) that hold a DB connection string. The
+  # first match per (host, database) is used.
+  conn_string_env_vars:
+    - DATABASE_URL
+    - USER_MYSQL_URL
+    - MYSQL_URL
+    - POSTGRES_URL
+  query:
+    max_rows_per_table: 100        # hard cap on rows returned per query
+    max_relation_paths: 10         # max data-viewer tabs / FK follow depth
+    timeout_seconds: 30            # per-query timeout
+

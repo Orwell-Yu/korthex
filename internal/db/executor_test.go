@@ -74,40 +74,52 @@ func TestWrapWithLimit_CommentBypassResistance(t *testing.T) {
 func TestExecutor_Query_CallsExecInPod(t *testing.T) {
 	var capturedNs, capturedPod string
 	var capturedCmd []string
+	var capturedStdin []byte
 
 	mockExec := &k8s.MockPodExecutor{
-		ExecInPodFunc: func(ctx context.Context, ns, pod, container string, cmd []string) ([]byte, []byte, error) {
+		ExecInPodWithStdinFunc: func(ctx context.Context, ns, pod, container string, cmd []string, stdin []byte) ([]byte, []byte, error) {
 			capturedNs = ns
 			capturedPod = pod
 			capturedCmd = cmd
-			// Return MySQL-style tab-separated output
-			return []byte("id\tname\n1\tAlice\n"), nil, nil
+			capturedStdin = stdin
+			return []byte(`{"columns":["id","name"],"rows":[["1","Alice"]]}`), nil, nil
 		},
 	}
 
 	creds := &sync.Map{}
-	creds.Store("production/mysql-0", &Credentials{
-		Username: "root",
-		Password: "secret",
-		Database: "testdb",
+	// env-name mode: password is read in-pod from USER_MYSQL_URL, never in argv.
+	creds.Store(credsKey("production", "mysql-0", "testdb"), &Credentials{
+		Username:   "root",
+		Password:   "secret",
+		Database:   "testdb",
+		Host:       "rm-xxx.rds.aliyuncs.com",
+		Port:       3306,
+		PythonPath: "/app/server/.venv/bin/python",
+		ConnEnvVar: "USER_MYSQL_URL",
 	})
 
 	exec := &executor{
 		podExec:         mockExec,
 		creds:           creds,
 		maxRowsPerTable: 100,
+		pythonPath:      "/app/server/.venv/bin/python",
 	}
 
 	result, err := exec.Query(context.Background(), "production", "mysql-0", "testdb", "SELECT id, name FROM users", 50, MySQL)
 	require.NoError(t, err)
 	assert.Equal(t, "production", capturedNs)
 	assert.Equal(t, "mysql-0", capturedPod)
-	// MySQL adapter now wraps in `sh -c "...mysql..."`; the mysql binary name lives in cmd[2].
-	require.GreaterOrEqual(t, len(capturedCmd), 3)
-	assert.Equal(t, []string{"sh", "-c"}, capturedCmd[:2])
-	assert.Contains(t, capturedCmd[2], "mysql")
-	// Outer wrapWithLimit fence applies the row cap; inner SQL is preserved verbatim.
-	assert.Contains(t, capturedCmd[2], "SELECT * FROM (SELECT id, name FROM users) AS _kr_outer LIMIT 50")
+	// env mode argv: [py, -c, script, "env", connEnvVar, sql]; SQL (LIMIT-fenced) is last.
+	require.Len(t, capturedCmd, 6)
+	assert.Equal(t, "/app/server/.venv/bin/python", capturedCmd[0])
+	assert.Equal(t, "env", capturedCmd[3])
+	assert.Equal(t, "USER_MYSQL_URL", capturedCmd[4])
+	assert.Equal(t, "SELECT * FROM (SELECT id, name FROM users) AS _kr_outer LIMIT 50", capturedCmd[5])
+	// SECURITY: password must not appear anywhere in argv; env mode uses no stdin.
+	for _, a := range capturedCmd {
+		assert.NotContains(t, a, "secret")
+	}
+	assert.Nil(t, capturedStdin)
 	assert.Equal(t, []string{"id", "name"}, result.Columns)
 	assert.Equal(t, 1, result.RowCount)
 }
@@ -115,7 +127,7 @@ func TestExecutor_Query_CallsExecInPod(t *testing.T) {
 func TestExecutor_Query_RejectsDangerousSQL(t *testing.T) {
 	mockExec := &k8s.MockPodExecutor{}
 	creds := &sync.Map{}
-	creds.Store("production/mysql-0", &Credentials{
+	creds.Store(credsKey("production", "mysql-0", "testdb"), &Credentials{
 		Username: "root",
 		Password: "secret",
 		Database: "testdb",
@@ -152,7 +164,7 @@ func TestExecutor_Query_ExecError(t *testing.T) {
 		},
 	}
 	creds := &sync.Map{}
-	creds.Store("production/mysql-0", &Credentials{
+	creds.Store(credsKey("production", "mysql-0", "testdb"), &Credentials{
 		Username: "root",
 		Password: "secret",
 		Database: "testdb",
@@ -172,7 +184,7 @@ func TestExecutor_Query_ExecError(t *testing.T) {
 func TestExecutor_Query_UnsupportedType(t *testing.T) {
 	mockExec := &k8s.MockPodExecutor{}
 	creds := &sync.Map{}
-	creds.Store("production/mongo-0", &Credentials{
+	creds.Store(credsKey("production", "mongo-0", "testdb"), &Credentials{
 		Username: "root",
 		Password: "secret",
 		Database: "testdb",

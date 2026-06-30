@@ -41,7 +41,7 @@ func TestAgentMetrics_Reset(t *testing.T) {
 		TotalOutput:  3000,
 		TotalCache:   2000,
 		ContextUsage: 0.5,
-		MaxContext:    200000,
+		MaxContext:   200000,
 	}
 
 	m.Reset()
@@ -82,7 +82,7 @@ func TestAgentMetrics_FormatHeader(t *testing.T) {
 				TotalOutput:  847,
 				TotalCache:   1500,
 				ContextUsage: 0.65,
-				MaxContext:    128000,
+				MaxContext:   128000,
 			},
 			expected: "iter:3 │ in:2.1k out:847 cache:1.5k │ ctx:65%",
 		},
@@ -104,7 +104,7 @@ func TestAgentMetrics_FormatHeader(t *testing.T) {
 				TotalOutput:  300,
 				TotalCache:   0,
 				ContextUsage: 0.01,
-				MaxContext:    128000,
+				MaxContext:   128000,
 			},
 			expected: "iter:1 │ in:1.5k out:300 │ ctx:1%",
 		},
@@ -124,7 +124,7 @@ func TestAgentMetrics_FormatHeaderProgressive(t *testing.T) {
 		TotalOutput:  847,
 		TotalCache:   1500,
 		ContextUsage: 0.65,
-		MaxContext:    128000,
+		MaxContext:   128000,
 	}
 
 	// Full format

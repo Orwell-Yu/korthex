@@ -115,6 +115,17 @@ var helpSections = []helpSection{
 			{"Esc", "Unfocus chat"},
 		},
 	},
+	{
+		title: "Data Viewer (query results)",
+		keys: []helpEntry{
+			{"Ctrl+T", "Reopen last query results"},
+			{"[ ] / 1-9", "Switch result tabs"},
+			{"j/k", "Scroll rows"},
+			{"h/l", "Scroll columns"},
+			{"s", "Export current tab to CSV"},
+			{"Esc/q", "Close data viewer"},
+		},
+	},
 }
 
 // View renders the help overlay centered within the given width and height.

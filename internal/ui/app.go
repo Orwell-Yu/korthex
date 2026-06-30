@@ -31,6 +31,7 @@ type AppModel struct {
 	podDetail     PodDetailModel
 	historySearch HistorySearchModel
 	kubeSwitch    KubeSwitchModel
+	dataViewer    DataViewModel
 
 	logBuffer *RingBuffer
 
@@ -78,6 +79,7 @@ func NewAppModel(a agent.Agent, k k8s.Client, cfg *config.Config, historyStore h
 		podDetail:     NewPodDetailModel(k, theme),
 		historySearch: NewHistorySearchModel(historyStore, theme),
 		kubeSwitch:    NewKubeSwitchModel(theme),
+		dataViewer:    NewDataViewModel(cfg.Database.Query.MaxRelationPaths, theme),
 		logBuffer:     logBuffer,
 		focus:         PanelResource,
 		layout:        LayoutFull,
@@ -168,10 +170,22 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 
+		// Keep the data viewer overlay's stored dims fresh for scroll clamping.
+		// View() re-applies full terminal dims each frame, so this is advisory.
+		m.dataViewer, _ = m.dataViewer.Update(msg)
+
 		return m, tea.Batch(cmds...)
 
 	// 2. Mouse events → click-to-focus + scroll routing
 	case tea.MouseMsg:
+		// Data viewer overlay (if visible) consumes mouse events first — tab clicks
+		// and wheel scrolling — before the click-to-focus / panel scroll routing.
+		if m.dataViewer.Visible() {
+			var cmd tea.Cmd
+			m.dataViewer, cmd = m.dataViewer.Update(msg)
+			return m, cmd
+		}
+
 		// Left click: focus the panel under the cursor
 		if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
 			if panel, ok := m.panelAtPosition(msg.X, msg.Y); ok && panel != m.focus {
@@ -237,6 +251,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// If data viewer overlay is visible, route all keys there (Esc closes it)
+		if m.dataViewer.Visible() {
+			var cmd tea.Cmd
+			m.dataViewer, cmd = m.dataViewer.Update(msg)
+			return m, cmd
+		}
+
 		switch msg.String() {
 		case "tab":
 			m.focus = m.nextFocus(1)
@@ -268,6 +289,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "ctrl+k":
 			m.openKubeSwitch()
+			return m, nil
+		case "ctrl+t":
+			// Reopen the data viewer overlay with the last query results (tabs
+			// survive Esc). No-op if no query has been run yet.
+			m.dataViewer.Reopen()
 			return m, nil
 		case "q":
 			if m.focus != PanelChat {
@@ -319,9 +345,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, logCmd)
 			}
 		}
-		// If query_database tool result, parse and emit DataResultMsg for Data Viewer.
-		// TODO(P3-S5): DataResultMsg is emitted here but not yet consumed — the Data Viewer
-		// panel that handles this message will be added in S5 (Data Viewer session).
+		// If query_database tool result, parse and emit DataResultMsg for the Data Viewer overlay.
 		if msg.Type == agent.EventToolResult && msg.ToolName == "query_database" {
 			if dataMsg, ok := parseQueryResult(msg.ToolResult); ok {
 				cmds = append(cmds, func() tea.Msg { return dataMsg })
@@ -395,6 +419,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusbar.SetNamespace(msg.Namespace)
 		return m, tea.Batch(cmds...)
+
+	case DataResultMsg:
+		// query_database result → add a tab and show the overlay. The first result
+		// (empty viewer) is the pinned primary tab; later results are FIFO-evicted.
+		if m.dataViewer.TabCount() == 0 {
+			msg.IsPrimary = true
+		}
+		m.dataViewer.AddTab(msg)
+		return m, nil
+
+	case csvExportedMsg:
+		var cmd tea.Cmd
+		m.dataViewer, cmd = m.dataViewer.Update(msg)
+		return m, cmd
 
 	case LogLineMsg:
 		var cmd tea.Cmd
@@ -573,6 +611,12 @@ func (m AppModel) View() string {
 		return m.help.View(m.width, m.height)
 	}
 
+	// Data viewer overlay takes over (full-screen; never composed into the
+	// main layout, so it cannot corrupt the three-panel rendering).
+	if m.dataViewer.Visible() {
+		return m.dataViewer.View(m.width, m.height)
+	}
+
 	dim := CalculateLayout(m.width, m.height, m.layout)
 
 	statusView := m.statusbar.View()
@@ -682,7 +726,7 @@ func (m AppModel) renderHistorySearchPanel(w, h int) string {
 	return border.Width(innerW).Height(innerH).Render(content)
 }
 
-func (m AppModel) renderPanel(id PanelID, w, h int) string {
+func (m AppModel) renderPanel(id PanelID, w, h int) (out string) {
 	active := m.focus == id
 	theme := GetTheme(m.config.UI.Theme)
 
@@ -696,6 +740,16 @@ func (m AppModel) renderPanel(id PanelID, w, h int) string {
 	// Inner content dimensions (border takes 2 chars width + 2 lines height)
 	innerW := max(w-2, 1)
 	innerH := max(h-2, 1)
+
+	// Guard against a panic in any panel's View(): degrade that single panel to
+	// a placeholder rather than crashing the whole TUI (which renders as a blank
+	// screen). The other panels keep rendering normally.
+	defer func() {
+		if r := recover(); r != nil {
+			out = border.Width(innerW).Height(innerH).Render(
+				truncateContent(fmt.Sprintf("panel render error: %v", r), innerW, innerH))
+		}
+	}()
 
 	var content string
 	switch id {
@@ -851,6 +905,7 @@ func parseQueryResult(toolResult string) (DataResultMsg, bool) {
 		Database  string     `json:"database"`
 		Namespace string     `json:"namespace"`
 		PodName   string     `json:"pod_name"`
+		TableName string     `json:"table_name"`
 	}
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		return DataResultMsg{}, false
@@ -863,6 +918,7 @@ func parseQueryResult(toolResult string) (DataResultMsg, bool) {
 		Database:  parsed.Database,
 		Namespace: parsed.Namespace,
 		PodName:   parsed.PodName,
+		TableName: parsed.TableName,
 	}, true
 }
 

@@ -16,6 +16,7 @@ type executor struct {
 	creds           *sync.Map // namespace/podName → *Credentials
 	maxRowsPerTable int
 	timeout         time.Duration // per-query timeout (0 = no per-query timeout)
+	pythonPath      string        // python interpreter inside the exec pod
 }
 
 // execSQL executes a raw SQL statement via kubectl exec (no safety check).
@@ -25,9 +26,9 @@ func (e *executor) execSQL(ctx context.Context, namespace, podName, database, sq
 		return nil, fmt.Errorf("unsupported database type: %s", dbType)
 	}
 
-	creds, err := e.getCachedCredentials(namespace, podName)
+	creds, err := e.getCachedCredentials(namespace, podName, database)
 	if err != nil {
-		return nil, fmt.Errorf("no credentials for %s/%s: %w", namespace, podName, err)
+		return nil, fmt.Errorf("no credentials for %s/%s (db %q): %w", namespace, podName, database, err)
 	}
 
 	// Override database if specified
@@ -35,8 +36,15 @@ func (e *executor) execSQL(ctx context.Context, namespace, podName, database, sq
 	if database != "" {
 		execCreds.Database = database
 	}
+	// Ensure execution context is set even if creds came from an older cache entry.
+	if execCreds.PythonPath == "" {
+		execCreds.PythonPath = e.pythonPath
+	}
+	if execCreds.Driver == "" {
+		execCreds.Driver = driverFor(dbType)
+	}
 
-	cmd := adapter.BuildCommand(sql, execCreds)
+	cmd, stdin := adapter.BuildCommand(sql, execCreds)
 
 	if e.timeout > 0 {
 		var cancel context.CancelFunc
@@ -44,7 +52,9 @@ func (e *executor) execSQL(ctx context.Context, namespace, podName, database, sq
 		defer cancel()
 	}
 
-	stdout, stderr, err := e.podExec.ExecInPod(ctx, namespace, podName, "", cmd)
+	// Secrets travel via stdin (in-cluster fallback) or via the pod's own env
+	// (RDS-via-pod) — never in the argv. Use the stdin-capable exec when needed.
+	stdout, stderr, err := e.podExec.ExecInPodWithStdin(ctx, namespace, podName, "", cmd, stdin)
 	if err != nil {
 		return nil, fmt.Errorf("exec failed: %w (stderr: %s)", err, string(stderr))
 	}
@@ -77,19 +87,23 @@ func (e *executor) Query(ctx context.Context, namespace, podName, database, sql 
 	return result, nil
 }
 
-// getCachedCredentials retrieves credentials from the cache.
-func (e *executor) getCachedCredentials(namespace, podName string) (*Credentials, error) {
-	key := namespace + "/" + podName
-	if cached, ok := e.creds.Load(key); ok {
+// getCachedCredentials retrieves credentials from the cache. Keyed by
+// (namespace, podName, database) because one pod can front multiple databases
+// with different connection strings.
+func (e *executor) getCachedCredentials(namespace, podName, database string) (*Credentials, error) {
+	if cached, ok := e.creds.Load(credsKey(namespace, podName, database)); ok {
 		return cached.(*Credentials), nil
 	}
 	return nil, fmt.Errorf("credentials not found")
 }
 
-// storeCredentials stores credentials in the cache.
-func (e *executor) storeCredentials(namespace, podName string, creds *Credentials) {
-	key := namespace + "/" + podName
-	e.creds.Store(key, creds)
+// storeCredentials stores credentials in the cache keyed by (ns, pod, database).
+func (e *executor) storeCredentials(namespace, podName, database string, creds *Credentials) {
+	e.creds.Store(credsKey(namespace, podName, database), creds)
+}
+
+func credsKey(namespace, podName, database string) string {
+	return namespace + "/" + podName + "/" + database
 }
 
 // wrapWithLimit guarantees the executed SQL returns at most effectiveLimit rows.

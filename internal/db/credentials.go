@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -31,9 +33,48 @@ func (f *credentialFetcher) GetCredentials(ctx context.Context, namespace, podNa
 	return creds, nil
 }
 
-// discoverCredentials runs the credential discovery chain:
-// 1. Pod env vars (direct values)
-// 2. Pod env vars from Secret refs (secretKeyRef)
+// GetCredentialsFromConnString resolves credentials by reading a specific
+// connection-string env var off the pod and parsing it. Used by the RDS-via-pod
+// discovery path, where DatabaseInfo.ConnEnvVar names the variable to read.
+// Both direct-value env vars and secretKeyRef-sourced ones are supported (the
+// latter has an empty Value in the PodSpec, so the Secret is read instead).
+// Results are cached under namespace/podName/envVar.
+func (f *credentialFetcher) GetCredentialsFromConnString(ctx context.Context, namespace, podName, envVar string) (*Credentials, error) {
+	key := namespace + "/" + podName + "/" + envVar
+	if cached, ok := f.cache.Load(key); ok {
+		return cached.(*Credentials), nil
+	}
+
+	envs, err := f.inspector.GetPodContainerEnvs(namespace, podName)
+	if err != nil {
+		return nil, fmt.Errorf("get pod envs: %w", err)
+	}
+	for _, containerEnvs := range envs {
+		for _, ev := range containerEnvs {
+			if ev.Name != envVar {
+				continue
+			}
+			value := ev.Value
+			if value == "" && ev.SecretName != "" {
+				// secretKeyRef: resolve the value from the Secret.
+				if data, derr := f.inspector.GetSecretData(ctx, namespace, ev.SecretName); derr == nil {
+					value = data[ev.SecretKey]
+				}
+			}
+			if value == "" {
+				continue
+			}
+			creds := parseDatabaseURL(value)
+			if creds == nil {
+				return nil, fmt.Errorf("env %s on %s/%s is not a valid connection string", envVar, namespace, podName)
+			}
+			f.cache.Store(key, creds)
+			return creds, nil
+		}
+	}
+	return nil, fmt.Errorf("env %s not found on %s/%s", envVar, namespace, podName)
+}
+
 // 3. envFrom secretRef entries
 func (f *credentialFetcher) discoverCredentials(ctx context.Context, namespace, podName string) (*Credentials, error) {
 	envs, err := f.inspector.GetPodContainerEnvs(namespace, podName)
@@ -198,56 +239,56 @@ func firstMatchOr(envs map[string]string, keys []string, fallback string) string
 	return fallback
 }
 
-// parseDatabaseURL parses a DATABASE_URL like:
-// postgresql://user:password@host:port/dbname
-// mysql://user:password@host:port/dbname
-func parseDatabaseURL(url string) *Credentials {
-	// Strip scheme
+// parseDatabaseURL parses a connection URL like:
+// postgresql+asyncpg://user:password@host:port/dbname
+// mysql+aiomysql://user:password@host:port/dbname
+// The "+driver" scheme suffix and URL-encoded credentials are handled.
+func parseDatabaseURL(rawURL string) *Credentials {
+	scheme := rawURL
+	if i := strings.Index(scheme, "://"); i != -1 {
+		scheme = strings.ToLower(scheme[:i])
+	}
+	if plus := strings.Index(scheme, "+"); plus != -1 {
+		scheme = scheme[:plus] // strip "+asyncpg" / "+aiomysql"
+	}
+
 	var creds Credentials
-	rest := url
-	if strings.HasPrefix(rest, "postgresql://") || strings.HasPrefix(rest, "postgres://") {
+	switch scheme {
+	case "postgresql", "postgres":
 		creds.Port = 5432
-		rest = rest[strings.Index(rest, "://")+3:]
-	} else if strings.HasPrefix(rest, "mysql://") {
+	case "mysql", "mariadb":
 		creds.Port = 3306
-		rest = rest[len("mysql://"):]
-	} else {
+	default:
 		return nil
 	}
 
-	// Split user:pass@host:port/dbname
-	atIdx := strings.LastIndex(rest, "@")
-	if atIdx == -1 {
+	// Normalize scheme so net/url can parse it, then use the standard parser
+	// (handles URL-encoded user/password correctly).
+	normalized := rawURL
+	if i := strings.Index(rawURL, "://"); i != -1 {
+		normalized = scheme + rawURL[i:]
+	}
+	u, err := url.Parse(normalized)
+	if err != nil || u.Host == "" {
 		return nil
 	}
 
-	userPass := rest[:atIdx]
-	hostDBPart := rest[atIdx+1:]
-
-	// Parse user:pass
-	if colonIdx := strings.Index(userPass, ":"); colonIdx != -1 {
-		creds.Username = userPass[:colonIdx]
-		creds.Password = userPass[colonIdx+1:]
-	} else {
-		creds.Username = userPass
+	creds.Host = u.Hostname()
+	if p := u.Port(); p != "" {
+		if pi, err := strconv.Atoi(p); err == nil {
+			creds.Port = pi
+		}
 	}
-
-	// Parse host:port/dbname
-	slashIdx := strings.Index(hostDBPart, "/")
-	if slashIdx != -1 {
-		creds.Database = strings.Split(hostDBPart[slashIdx+1:], "?")[0] // strip query params
-		hostDBPart = hostDBPart[:slashIdx]
+	if u.User != nil {
+		creds.Username = u.User.Username()
+		if pwd, ok := u.User.Password(); ok {
+			creds.Password = pwd // already URL-decoded by net/url
+		}
 	}
-
-	if colonIdx := strings.Index(hostDBPart, ":"); colonIdx != -1 {
-		creds.Host = hostDBPart[:colonIdx]
-	} else {
-		creds.Host = hostDBPart
-	}
+	creds.Database = strings.TrimPrefix(u.Path, "/")
 
 	if creds.Password == "" {
 		return nil
 	}
-
 	return &creds
 }

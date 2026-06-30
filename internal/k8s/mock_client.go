@@ -4,10 +4,22 @@ import "context"
 
 // MockPodExecutor is a test double for the PodExecutor interface.
 type MockPodExecutor struct {
-	ExecInPodFunc func(ctx context.Context, namespace, podName, container string, command []string) ([]byte, []byte, error)
+	ExecInPodFunc          func(ctx context.Context, namespace, podName, container string, command []string) ([]byte, []byte, error)
+	ExecInPodWithStdinFunc func(ctx context.Context, namespace, podName, container string, command []string, stdin []byte) ([]byte, []byte, error)
 }
 
 func (m *MockPodExecutor) ExecInPod(ctx context.Context, namespace, podName, container string, command []string) ([]byte, []byte, error) {
+	if m.ExecInPodFunc != nil {
+		return m.ExecInPodFunc(ctx, namespace, podName, container, command)
+	}
+	return nil, nil, nil
+}
+
+func (m *MockPodExecutor) ExecInPodWithStdin(ctx context.Context, namespace, podName, container string, command []string, stdin []byte) ([]byte, []byte, error) {
+	if m.ExecInPodWithStdinFunc != nil {
+		return m.ExecInPodWithStdinFunc(ctx, namespace, podName, container, command, stdin)
+	}
+	// Default: ignore stdin, delegate to ExecInPodFunc so existing tests keep working.
 	if m.ExecInPodFunc != nil {
 		return m.ExecInPodFunc(ctx, namespace, podName, container, command)
 	}

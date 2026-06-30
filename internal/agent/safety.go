@@ -33,11 +33,11 @@ func NewSafetyChecker() SafetyChecker {
 			"list_kubeconfigs":         SafetyAllowed,
 			"switch_kubeconfig":        SafetyAllowed,
 			// Phase 3: Database tools
-			"discover_databases":  SafetyAllowed,
-			"get_db_credentials":  SafetyAllowed,
-			"get_db_schema":       SafetyAllowed,
-			"query_database":      SafetyAllowed,
-			"get_foreign_keys":    SafetyAllowed,
+			"discover_databases": SafetyAllowed,
+			"get_db_credentials": SafetyAllowed,
+			"get_db_schema":      SafetyAllowed,
+			"query_database":     SafetyAllowed,
+			"get_foreign_keys":   SafetyAllowed,
 		},
 	}
 }
